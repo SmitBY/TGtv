@@ -87,10 +87,8 @@ final class ChatListViewController: UICollectionViewController {
                 print("ChatListViewController: Получено \(chats.count) чатов")
                 self.collectionView.reloadData()
                 
-                if chats.isEmpty && !self.viewModel.isLoading {
-                    self.errorLabel.text = "Нет доступных чатов"
-                    self.errorLabel.isHidden = false
-                } else if !chats.isEmpty {
+                // Скрываем сообщение об ошибке, если есть чаты
+                if !chats.isEmpty {
                     self.errorLabel.isHidden = true
                 }
             }
@@ -103,11 +101,12 @@ final class ChatListViewController: UICollectionViewController {
                 if isLoading {
                     self.loadingIndicator.startAnimating()
                     self.progressLabel.isHidden = false
+                    self.errorLabel.isHidden = true
                 } else {
                     self.loadingIndicator.stopAnimating()
                     self.progressLabel.isHidden = true
                     
-                    // Если после загрузки список пуст, показываем кнопку повтора
+                    // Показываем сообщение об отсутствии чатов только после завершения загрузки
                     if self.viewModel.chats.isEmpty {
                         self.errorLabel.text = "Нет доступных чатов. Нажмите OK для повторной загрузки."
                         self.errorLabel.isHidden = false
@@ -166,6 +165,16 @@ final class ChatListViewController: UICollectionViewController {
     
     override func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
         let chat = viewModel.chats[indexPath.item]
+        
+        // Проверяем, есть ли уже открытый MessagesViewController
+        if let appDelegate = UIApplication.shared.delegate as? AppDelegate,
+           let existingVC = appDelegate.messagesViewController,
+           existingVC.chatId == chat.id {
+            print("ChatListViewController: Переходим к уже открытому чату")
+            navigationController?.pushViewController(existingVC, animated: true)
+            return
+        }
+        
         let messagesVC = MessagesViewController(chatId: chat.id, client: viewModel.client)
         if let appDelegate = UIApplication.shared.delegate as? AppDelegate {
             appDelegate.setMessagesViewController(messagesVC)

@@ -1,13 +1,16 @@
 import UIKit
 import TDLibKit
 import Combine
+import AVFoundation
+import AVKit
 
 final class MessagesViewController: UIViewController {
-    private let chatId: Int64
     private let client: TDLibClient
     private var messages: [TG.Message] = []
     private var cancellables = Set<AnyCancellable>()
     private var isLoading = false
+    
+    let chatId: Int64
     
     private let tableView: UITableView = {
         let tv = UITableView()
@@ -33,6 +36,16 @@ final class MessagesViewController: UIViewController {
         super.viewDidLoad()
         setupUI()
         loadMessages()
+        
+        // Регистрируем контроллер в AppDelegate для получения обновлений
+        if let appDelegate = UIApplication.shared.delegate as? AppDelegate {
+            appDelegate.setMessagesViewController(self)
+        }
+        
+        // Устанавливаем фокус на таблицу
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            self.tableView.becomeFirstResponder()
+        }
     }
     
     override func viewWillAppear(_ animated: Bool) {
@@ -40,13 +53,9 @@ final class MessagesViewController: UIViewController {
         print("MessagesViewController: viewWillAppear")
         navigationController?.setNavigationBarHidden(true, animated: false)
         
-        // Костыль для tvOS - принудительно устанавливаем фокус на таблицу
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-            // Используем современный API для tvOS
-            if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-               let window = windowScene.windows.first {
-                window.rootViewController?.setNeedsFocusUpdate()
-            }
+        // Устанавливаем этот контроллер как обработчик обновлений
+        if let appDelegate = UIApplication.shared.delegate as? AppDelegate {
+            appDelegate.setMessagesViewController(self)
         }
     }
     
@@ -56,15 +65,26 @@ final class MessagesViewController: UIViewController {
     }
     
     override var preferredFocusEnvironments: [UIFocusEnvironment] {
+        if !messages.isEmpty {
+            if let lastCell = tableView.cellForRow(at: IndexPath(row: messages.count - 1, section: 0)) {
+                return [lastCell]
+            }
+        }
         return [tableView]
     }
     
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
         print("MessagesViewController: viewDidDisappear")
-        if let appDelegate = UIApplication.shared.delegate as? AppDelegate, 
-           appDelegate.messagesViewController === self {
-            appDelegate.setMessagesViewController(nil)
+        
+        // Проверяем, что нас действительно нужно удалить
+        if navigationController == nil || navigationController?.viewControllers.contains(self) == false {
+            if let appDelegate = UIApplication.shared.delegate as? AppDelegate, 
+               appDelegate.messagesViewController === self {
+                appDelegate.setMessagesViewController(nil)
+            }
+        } else {
+            print("MessagesViewController: Остаемся в стеке навигации")
         }
     }
     
@@ -133,17 +153,34 @@ final class MessagesViewController: UIViewController {
     
     @objc private func backButtonTapped() {
         print("MessagesViewController: Кнопка назад нажата")
+        
+        // Устанавливаем ссылку на контроллер в nil только при явном нажатии кнопки назад
         if let appDelegate = UIApplication.shared.delegate as? AppDelegate, 
            appDelegate.messagesViewController === self {
             appDelegate.setMessagesViewController(nil)
         }
+        
         navigationController?.popViewController(animated: true)
     }
     
     @MainActor
     func handleUpdate(_ update: TDLibKit.Update) {
-        if case .updateNewMessage(let update) = update, update.message.chatId == chatId {
-            handleNewMessage(update.message)
+        do {
+            if case .updateNewMessage(let update) = update, update.message.chatId == chatId {
+                handleNewMessage(update.message)
+            } else if case .updateFile(let update) = update {
+                // Обрабатываем обновление файлов, но не выходим из чата при ошибках
+                print("MessagesViewController: Обновление файла \(update.file.id)")
+                
+                // Обновляем UI для видео, если это текущий файл
+                if tableView.indexPathsForVisibleRows != nil {
+                    DispatchQueue.main.async {
+                        self.tableView.reloadData()
+                    }
+                }
+            }
+        } catch {
+            print("MessagesViewController: Ошибка обработки обновления: \(error)")
         }
     }
     
@@ -158,7 +195,18 @@ final class MessagesViewController: UIViewController {
         )
         messages.append(newMessage)
         tableView.reloadData()
-        scrollToBottom()
+        
+        // Прокручиваем к новому сообщению и выделяем его
+        let lastIndex = IndexPath(row: messages.count - 1, section: 0)
+        tableView.scrollToRow(at: lastIndex, at: .bottom, animated: true)
+        
+        // Устанавливаем фокус на новое сообщение
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            self.tableView.selectRow(at: lastIndex, animated: true, scrollPosition: .none)
+            if let cell = self.tableView.cellForRow(at: lastIndex) as? MessageCell {
+                cell.setSelected(true, animated: true)
+            }
+        }
     }
     
     private func loadMessages() {
@@ -182,27 +230,55 @@ final class MessagesViewController: UIViewController {
                 
                 print("MessagesViewController: Получено \(history.messages?.count ?? 0) сообщений")
                 
-                if let historyMessages = history.messages, !historyMessages.isEmpty {
-                    messages = historyMessages.map { message in
-                        TG.Message(
-                            id: message.id,
-                            text: getMessageText(from: message),
-                            isOutgoing: message.isOutgoing,
-                            media: getMedia(from: message),
-                            date: Date(timeIntervalSince1970: TimeInterval(message.date))
-                        )
-                    }
-                    
-                    await MainActor.run {
-                        loadingIndicator.stopAnimating()
-                        messageLabel.isHidden = true
-                        tableView.reloadData()
-                        scrollToBottom()
-                    }
-                } else {
-                    await MainActor.run {
-                        loadingIndicator.stopAnimating()
-                        messageLabel.text = "Нет сообщений в этом чате"
+                await MainActor.run {
+                    if let historyMessages = history.messages {
+                        if !historyMessages.isEmpty {
+                            messages = historyMessages.map { message in
+                                TG.Message(
+                                    id: message.id,
+                                    text: getMessageText(from: message),
+                                    isOutgoing: message.isOutgoing,
+                                    media: getMedia(from: message),
+                                    date: Date(timeIntervalSince1970: TimeInterval(message.date))
+                                )
+                            }
+                            
+                            loadingIndicator.stopAnimating()
+                            messageLabel.isHidden = true
+                            tableView.reloadData()
+                            
+                            // Даем время таблице обновиться
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                                if self.messages.count > 0 {
+                                    let lastIndex = IndexPath(row: self.messages.count - 1, section: 0)
+                                    
+                                    // Сначала прокручиваем к последнему сообщению
+                                    self.tableView.scrollToRow(at: lastIndex, at: .bottom, animated: false)
+                                    
+                                    // Затем устанавливаем фокус и выделение
+                                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                                        self.tableView.selectRow(at: lastIndex, animated: false, scrollPosition: .none)
+                                        
+                                        // Запрашиваем обновление фокуса системы для выбора последнего сообщения
+                                        self.setNeedsFocusUpdate()
+                                        self.updateFocusIfNeeded()
+                                        
+                                        // Проверяем, что ячейка выбрана
+                                        if let cell = self.tableView.cellForRow(at: lastIndex) as? MessageCell {
+                                            print("MessagesViewController: Устанавливаем фокус на последнее сообщение \(lastIndex.row)")
+                                            cell.setSelected(true, animated: true)
+                                        } else {
+                                            print("MessagesViewController: Не удалось получить ячейку для последнего сообщения")
+                                        }
+                                    }
+                                } else {
+                                    print("MessagesViewController: Нет сообщений для выбора")
+                                }
+                            }
+                        } else {
+                            loadingIndicator.stopAnimating()
+                            messageLabel.text = "Нет сообщений в этом чате"
+                        }
                     }
                 }
             } catch {
@@ -243,11 +319,38 @@ final class MessagesViewController: UIViewController {
         case .messagePhoto(let messagePhoto):
             let sizes = messagePhoto.photo.sizes
             guard let largest = sizes.max(by: { $0.width * $0.height < $1.width * $1.height }) else { return nil }
-            return .photo(path: largest.photo.local.path)
+            let path = largest.photo.local.path
+            print("MessagesViewController: Путь к фото: \(path)")
+            return .photo(path: path)
         case .messageVideo(let messageVideo):
-            return .video(path: messageVideo.video.video.local.path)
+            let path = messageVideo.video.video.local.path
+            print("MessagesViewController: Путь к видео: \(path), доступно: \(messageVideo.video.video.local.isDownloadingCompleted), размер: \(messageVideo.video.video.size)")
+            
+            // Проверяем, загружено ли видео
+            if !messageVideo.video.video.local.isDownloadingCompleted {
+                // Запускаем загрузку видео, если оно не загружено
+                Task {
+                    do {
+                        print("MessagesViewController: Загрузка видео...")
+                        let _ = try await client.downloadFile(
+                            fileId: messageVideo.video.video.id,
+                            limit: 0,
+                            offset: 0,
+                            priority: 1,
+                            synchronous: false
+                        )
+                        print("MessagesViewController: Запрос на загрузку видео отправлен")
+                    } catch {
+                        print("MessagesViewController: Ошибка при загрузке видео: \(error)")
+                    }
+                }
+            }
+            
+            return .video(path: path)
         case .messageDocument(let messageDocument):
-            return .document(path: messageDocument.document.document.local.path)
+            let path = messageDocument.document.document.local.path
+            print("MessagesViewController: Путь к документу: \(path)")
+            return .document(path: path)
         default:
             return nil
         }
@@ -277,6 +380,12 @@ final class MessageCell: UITableViewCell {
     private let messageBubble = UIView()
     private let messageLabel = UILabel()
     private let dateLabel = UILabel()
+    private let videoContainer = UIView()
+    private var player: AVPlayer?
+    private var playerItem: AVPlayerItem?
+    private var videoURL: URL?
+    private var playerVC: AVPlayerViewController?
+    private var isPlayingVideo = false
     
     override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
         super.init(style: style, reuseIdentifier: reuseIdentifier)
@@ -303,9 +412,15 @@ final class MessageCell: UITableViewCell {
         dateLabel.textColor = .lightGray
         dateLabel.font = .systemFont(ofSize: 14)
         
-        let stack = UIStackView(arrangedSubviews: [messageLabel, dateLabel])
+        videoContainer.translatesAutoresizingMaskIntoConstraints = false
+        videoContainer.backgroundColor = .black
+        videoContainer.isHidden = true
+        videoContainer.layer.cornerRadius = 8
+        videoContainer.clipsToBounds = true
+        
+        let stack = UIStackView(arrangedSubviews: [messageLabel, videoContainer, dateLabel])
         stack.axis = .vertical
-        stack.spacing = 4
+        stack.spacing = 8
         stack.translatesAutoresizingMaskIntoConstraints = false
         
         messageBubble.addSubview(stack)
@@ -319,7 +434,9 @@ final class MessageCell: UITableViewCell {
             stack.leadingAnchor.constraint(equalTo: messageBubble.leadingAnchor, constant: 12),
             stack.trailingAnchor.constraint(equalTo: messageBubble.trailingAnchor, constant: -12),
             stack.topAnchor.constraint(equalTo: messageBubble.topAnchor, constant: 8),
-            stack.bottomAnchor.constraint(equalTo: messageBubble.bottomAnchor, constant: -8)
+            stack.bottomAnchor.constraint(equalTo: messageBubble.bottomAnchor, constant: -8),
+            
+            videoContainer.heightAnchor.constraint(equalTo: videoContainer.widthAnchor, multiplier: 9/16)
         ])
     }
     
@@ -330,6 +447,47 @@ final class MessageCell: UITableViewCell {
         formatter.dateStyle = .short
         formatter.timeStyle = .short
         dateLabel.text = formatter.string(from: message.date)
+        
+        // Обработка видео
+        if let media = message.media, case .video(let path) = media {
+            videoContainer.isHidden = false
+            videoURL = URL(fileURLWithPath: path)
+            
+            // Проверяем существование файла
+            if FileManager.default.fileExists(atPath: path) {
+                do {
+                    let attrs = try FileManager.default.attributesOfItem(atPath: path)
+                    let fileSize = attrs[.size] as? UInt64 ?? 0
+                    print("MessageCell: Файл видео существует: \(path), размер: \(fileSize)")
+                    prepareVideoPlayer()
+                } catch {
+                    print("MessageCell: Ошибка при получении атрибутов файла: \(error)")
+                    prepareVideoPlayer()
+                }
+            } else {
+                print("MessageCell: Ошибка - видео файл не существует: \(path)")
+                // Показываем плейсхолдер или сообщение о необходимости загрузки
+                videoContainer.backgroundColor = .darkGray
+                
+                // Добавляем индикатор загрузки
+                let loadingLabel = UILabel()
+                loadingLabel.text = "Видео загружается..."
+                loadingLabel.textColor = .white
+                loadingLabel.translatesAutoresizingMaskIntoConstraints = false
+                loadingLabel.textAlignment = .center
+                
+                videoContainer.subviews.forEach { $0.removeFromSuperview() }
+                videoContainer.addSubview(loadingLabel)
+                
+                NSLayoutConstraint.activate([
+                    loadingLabel.centerXAnchor.constraint(equalTo: videoContainer.centerXAnchor),
+                    loadingLabel.centerYAnchor.constraint(equalTo: videoContainer.centerYAnchor)
+                ])
+            }
+        } else {
+            videoContainer.isHidden = true
+            cleanupPlayer()
+        }
         
         if message.isOutgoing {
             messageBubble.backgroundColor = UIColor(red: 0, green: 0.5, blue: 1.0, alpha: 1.0)
@@ -352,6 +510,73 @@ final class MessageCell: UITableViewCell {
         }
     }
     
+    private func prepareVideoPlayer() {
+        guard let url = videoURL else { return }
+        
+        // Используем AVURLAsset вместо устаревшего AVAsset(url:)
+        let asset = AVURLAsset(url: url)
+        
+        // Используем современный API для загрузки метаданных
+        Task {
+            do {
+                // Загружаем необходимые свойства
+                _ = try await asset.load(.isPlayable, .duration)
+                
+                // Проверяем, можно ли воспроизвести видео
+                let isPlayable = try await asset.load(.isPlayable)
+                
+                // Обрабатываем результат в основном потоке
+                await MainActor.run {
+                    if isPlayable {
+                        self.playerItem = AVPlayerItem(asset: asset)
+                        self.player = AVPlayer(playerItem: self.playerItem)
+                        self.player?.automaticallyWaitsToMinimizeStalling = true
+                    } else {
+                        print("MessageCell: Видео не может быть воспроизведено")
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    print("MessageCell: Ошибка загрузки видео: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+    
+    private func playVideo() {
+        if isPlayingVideo { return }
+        
+        guard let player = self.player else {
+            print("MessageCell: Плеер не инициализирован")
+            return
+        }
+        
+        // Создаем и настраиваем AVPlayerViewController
+        playerVC = AVPlayerViewController()
+        playerVC?.player = player
+        
+        // Настраиваем представление до показа
+        if let playerVC = playerVC {
+            playerVC.showsPlaybackControls = true
+            
+            if let messagesVC = window?.rootViewController?.children.last as? MessagesViewController {
+                isPlayingVideo = true
+                messagesVC.present(playerVC, animated: true) {
+                    player.play()
+                }
+            }
+        }
+    }
+    
+    private func cleanupPlayer() {
+        player?.pause()
+        player = nil
+        playerItem = nil
+        videoURL = nil
+        playerVC = nil
+        isPlayingVideo = false
+    }
+    
     override func didUpdateFocus(in context: UIFocusUpdateContext, with coordinator: UIFocusAnimationCoordinator) {
         super.didUpdateFocus(in: context, with: coordinator)
         if isFocused {
@@ -360,9 +585,20 @@ final class MessageCell: UITableViewCell {
             messageBubble.layer.shadowOpacity = 0.5
             messageBubble.layer.shadowOffset = .zero
             messageBubble.layer.shadowRadius = 5
+            
+            // При фокусе на сообщении с видео, показываем его в полноэкранном режиме
+            if videoURL != nil && player != nil {
+                playVideo()
+            }
         } else {
             messageBubble.transform = .identity
             messageBubble.layer.shadowOpacity = 0
         }
+    }
+    
+    override func prepareForReuse() {
+        super.prepareForReuse()
+        cleanupPlayer()
+        videoContainer.isHidden = true
     }
 } 

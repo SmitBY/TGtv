@@ -233,8 +233,18 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             } catch {
                 print("AppDelegate: Ошибка декодирования обновления: \(error)")
                 
-                Task { @MainActor in
-                    await self?.authService?.checkAuthState()
+                // Проверяем, связана ли ошибка с обновлением файла
+                if jsonString.contains("\"@type\":\"updateFile\"") {
+                    print("AppDelegate: Игнорируем ошибку декодирования обновления файла")
+                    // Не сбрасываем авторизацию для ошибок связанных с файлами
+                } else if jsonString.contains("\"@type\":\"updateConnectionState\"") {
+                    print("AppDelegate: Игнорируем ошибку декодирования состояния соединения")
+                    // Не сбрасываем авторизацию для ошибок связанных с соединением
+                } else {
+                    // Для других ошибок проверяем авторизацию
+                    Task { @MainActor in
+                        await self?.authService?.checkAuthState()
+                    }
                 }
             }
         })
@@ -242,6 +252,11 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
     // Метод для установки MessagesViewController
     func setMessagesViewController(_ controller: MessagesViewController?) {
+        // Если контроллер тот же, что и сейчас - ничего не делаем
+        if messagesViewController === controller {
+            return
+        }
+        
         messagesViewController = controller
         if controller != nil {
             print("AppDelegate: MessagesViewController установлен")
