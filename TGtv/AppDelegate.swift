@@ -105,6 +105,22 @@ extension TDLibKit.Update {
             ))
         }
         
+        // Обработка обновления удаления сообщений
+        if type == "updateDeleteMessages",
+           let chatId = json["chat_id"] as? Int64,
+           let messageIds = json["message_ids"] as? [Int64],
+           let isPermanent = json["is_permanent"] as? Bool,
+           let fromCache = json["from_cache"] as? Bool {
+            
+            let deleteMessages = TDLibKit.UpdateDeleteMessages(
+                chatId: chatId,
+                fromCache: fromCache,
+                isPermanent: isPermanent,
+                messageIds: messageIds
+            )
+            return .updateDeleteMessages(deleteMessages)
+        }
+        
         return nil
     }
 }
@@ -183,9 +199,11 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             window?.rootViewController = navigationController
             window?.makeKeyAndVisible()
             
-            // Запускаем проверку состояния авторизации
+            // Запускаем проверку состояния авторизации только при начальной загрузке
             Task {
-                await authService.checkAuthState()
+                if !authService.isAuthorized {
+                    await authService.checkAuthState()
+                }
             }
         } else {
             print("AppDelegate: Ошибка - сервисы не инициализированы")
@@ -205,17 +223,20 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
                 print("AppDelegate: Сырые данные: \(jsonString)")
             }
             
+            // Пробуем сначала использовать ручной парсинг для известных типов обновлений
             if let update = Update.fromRawJSON(data) {
                 print("AppDelegate: Получено обновление через ручной парсинг: \(update)")
                 
                 Task { @MainActor in
-                    self?.authService?.handleUpdate(update)
-                    self?.chatListViewModel?.handleUpdate(update)
-                    self?.messagesViewController?.handleUpdate(update)
+                    guard let self = self else { return }
+                    self.authService?.handleUpdate(update)
+                    self.chatListViewModel?.handleUpdate(update)
+                    self.messagesViewController?.handleUpdate(update)
                 }
                 return
             }
             
+            // Если ручной парсинг не сработал, пробуем автоматический декодер
             do {
                 let decoder = JSONDecoder()
                 let update = try decoder.decode(Update.self, from: data)
@@ -226,21 +247,28 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
                 }
                 
                 Task { @MainActor in
-                    self?.authService?.handleUpdate(update)
-                    self?.chatListViewModel?.handleUpdate(update)
-                    self?.messagesViewController?.handleUpdate(update)
+                    guard let self = self else { return }
+                    self.authService?.handleUpdate(update)
+                    self.chatListViewModel?.handleUpdate(update)
+                    self.messagesViewController?.handleUpdate(update)
                 }
             } catch {
-                print("AppDelegate: Ошибка декодирования обновления: \(error)")
+                // Проверяем тип ошибки и контент JSON для принятия решения
+                let errorDescription = "\(error)"
                 
-                // Проверяем, связана ли ошибка с обновлением файла
-                if jsonString.contains("\"@type\":\"updateFile\"") {
-                    print("AppDelegate: Игнорируем ошибку декодирования обновления файла")
-                    // Не сбрасываем авторизацию для ошибок связанных с файлами
-                } else if jsonString.contains("\"@type\":\"updateConnectionState\"") {
-                    print("AppDelegate: Игнорируем ошибку декодирования состояния соединения")
-                    // Не сбрасываем авторизацию для ошибок связанных с соединением
+                // Пропускаем известные безопасные ошибки
+                let safeToPropagateError = (
+                    jsonString.contains("\"@type\":\"updateFile\"") ||
+                    jsonString.contains("\"@type\":\"updateConnectionState\"") ||
+                    // Игнорируем ошибки keyNotFound для chatId
+                    errorDescription.contains("keyNotFound(CodingKeys(stringValue: \"chatId\"")
+                )
+                
+                if safeToPropagateError {
+                    print("AppDelegate: Игнорируем безопасную ошибку декодирования: \(error)")
                 } else {
+                    print("AppDelegate: Ошибка декодирования обновления: \(error)")
+                    
                     // Для других ошибок проверяем авторизацию
                     Task { @MainActor in
                         await self?.authService?.checkAuthState()
@@ -250,19 +278,29 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         })
     }
 
-    // Метод для установки MessagesViewController
+    // Упрощенный метод установки MessagesViewController
     func setMessagesViewController(_ controller: MessagesViewController?) {
-        // Если контроллер тот же, что и сейчас - ничего не делаем
-        if messagesViewController === controller {
-            return
-        }
-        
-        messagesViewController = controller
-        if controller != nil {
-            print("AppDelegate: MessagesViewController установлен")
+        // Просто устанавливаем ссылку и логируем
+        if messagesViewController !== controller {
+            if controller == nil {
+                print("AppDelegate: Установка messagesViewController в nil")
+            } else {
+                print("AppDelegate: Установка messagesViewController на новый экземпляр для чата \(controller?.chatId ?? 0)")
+            }
+            messagesViewController = controller
         } else {
-            print("AppDelegate: MessagesViewController удален")
+             print("AppDelegate: Игнорирование вызова setMessagesViewController с тем же контроллером")
         }
+    }
+    
+    // Проверка, не происходит ли сейчас смена авторизации
+    private func isChangingAuthState() -> Bool {
+        // Защита от nil
+        guard let service = authService else { 
+            print("AppDelegate: authService = nil в isChangingAuthState")
+            return false 
+        }
+        return service.isChangingAuthState
     }
 
     // ... existing code ...

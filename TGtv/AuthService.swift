@@ -10,6 +10,12 @@ class AuthService {
     @Published var needPassword = false
     @Published var passwordHint: String = ""
     private var isSettingParameters = false
+    @Published var isChangingAuthState = false
+    private var chatLoadRetryCount = 0
+    private var maxChatLoadRetries = 3
+    private var isChatLoadingInProgress = false
+    private var lastAuthStateCheck: TimeInterval = 0
+    private var minStateCheckInterval: TimeInterval = 1.0  // минимальный интервал между проверками состояния в секундах
     
     init(client: TDLibClient) {
         print("AuthService: Инициализация")
@@ -21,7 +27,9 @@ class AuthService {
         
         switch update {
         case .updateAuthorizationState(let state):
+            isChangingAuthState = true
             handleAuthStateUpdate(state.authorizationState)
+            isChangingAuthState = false
         case .updateOption:
             print("AuthService: Получено обновление опций")
         default:
@@ -61,12 +69,23 @@ class AuthService {
             print("AuthService: Авторизация успешна")
             needPassword = false
             isAuthorized = true
-            Task {
-                do {
-                    print("AuthService: Загрузка чатов")
-                    try await client.loadChats(chatList: .chatListMain, limit: 20)
-                } catch {
-                    print("AuthService: Ошибка загрузки чатов: \(error)")
+            
+            if chatLoadRetryCount < maxChatLoadRetries && !isChatLoadingInProgress {
+                Task {
+                    do {
+                        isChatLoadingInProgress = true
+                        print("AuthService: Загрузка чатов (попытка \(chatLoadRetryCount + 1)/\(maxChatLoadRetries))")
+                        try await client.loadChats(chatList: .chatListMain, limit: 20)
+                        chatLoadRetryCount = 0
+                    } catch {
+                        print("AuthService: Ошибка загрузки чатов: \(error)")
+                        chatLoadRetryCount += 1
+                        
+                        if chatLoadRetryCount >= maxChatLoadRetries {
+                            print("AuthService: Достигнуто максимальное количество попыток загрузки чатов")
+                        }
+                    }
+                    isChatLoadingInProgress = false
                 }
             }
         case .authorizationStateLoggingOut:
@@ -149,7 +168,16 @@ class AuthService {
     }
     
     func checkAuthState() async {
+        let currentTime = Date().timeIntervalSince1970
+        // Проверяем, что прошло достаточно времени с последней проверки
+        guard currentTime - lastAuthStateCheck >= minStateCheckInterval else {
+            print("AuthService: Слишком частая проверка состояния авторизации, пропускаем")
+            return
+        }
+        
         print("AuthService: Проверка состояния авторизации")
+        lastAuthStateCheck = currentTime
+        isChangingAuthState = true
         do {
             let state = try await client.getAuthorizationState()
             print("AuthService: Текущее состояние: \(state)")
@@ -157,5 +185,6 @@ class AuthService {
         } catch {
             print("AuthService: Ошибка получения состояния: \(error)")
         }
+        isChangingAuthState = false
     }
 } 
