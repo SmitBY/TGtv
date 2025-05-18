@@ -11,7 +11,8 @@ final class ChatListViewController: UICollectionViewController {
     init(viewModel: ChatListViewModel) {
         self.viewModel = viewModel
         let layout = UICollectionViewFlowLayout()
-        layout.itemSize = CGSize(width: 400, height: 200)
+        // Размеры ячеек лучше настраивать через layout delegate для адаптивности
+        // layout.itemSize = CGSize(width: 400, height: 200)
         layout.minimumLineSpacing = 20
         layout.minimumInteritemSpacing = 20
         super.init(collectionViewLayout: layout)
@@ -26,26 +27,28 @@ final class ChatListViewController: UICollectionViewController {
         setupCollectionView()
         setupLoadingIndicator()
         setupBindings()
+        // Начальная загрузка инициируется ViewModel
     }
     
     private func setupCollectionView() {
         collectionView.register(ChatCell.self, forCellWithReuseIdentifier: "ChatCell")
         collectionView.backgroundColor = .black
-        
-        // Настройка для tvOS
         collectionView.remembersLastFocusedIndexPath = true
         
         if let layout = collectionViewLayout as? UICollectionViewFlowLayout {
             layout.scrollDirection = .vertical
             layout.sectionInset = UIEdgeInsets(top: 50, left: 50, bottom: 50, right: 50)
+            // Настраиваем размер ячеек через делегат для большей гибкости
+            // layout.itemSize будет установлено в методе делегата
         }
+        collectionView.delegate = self // Устанавливаем делегат для UICollectionViewDelegateFlowLayout
     }
     
     private func setupLoadingIndicator() {
         loadingIndicator.translatesAutoresizingMaskIntoConstraints = false
         loadingIndicator.hidesWhenStopped = true
         loadingIndicator.color = .white
-        loadingIndicator.startAnimating()
+        // loadingIndicator.startAnimating() // ViewModel управляет этим через isLoading
         view.addSubview(loadingIndicator)
         
         progressLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -84,18 +87,11 @@ final class ChatListViewController: UICollectionViewController {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] chats in
                 guard let self = self else { return }
-                print("ChatListViewController: Получено \(chats.count) чатов")
+                print("ChatListViewController: Получено \(chats.count) чатов для отображения.")
                 self.collectionView.reloadData()
                 
-                // Скрываем сообщение об ошибке, если есть чаты
                 if !chats.isEmpty {
                     self.errorLabel.isHidden = true
-                    
-                    // Если есть чаты, загрузка должна быть завершена - скрываем индикатор
-                    if self.loadingIndicator.isAnimating {
-                        self.loadingIndicator.stopAnimating()
-                        self.progressLabel.isHidden = true
-                    }
                 }
             }
             .store(in: &cancellables)
@@ -104,36 +100,35 @@ final class ChatListViewController: UICollectionViewController {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] isLoading in
                 guard let self = self else { return }
-                if isLoading {
+                if isLoading && !self.viewModel.isLoadingMore { // Показываем главный индикатор только если не идет дозагрузка
                     self.loadingIndicator.startAnimating()
-                    self.progressLabel.isHidden = false
+                    self.progressLabel.isHidden = false // progressLabel для начальной загрузки
                     self.errorLabel.isHidden = true
-                } else {
+                } else if !isLoading && !self.viewModel.isLoadingMore {
                     self.loadingIndicator.stopAnimating()
                     self.progressLabel.isHidden = true
-                    
-                    // Показываем сообщение об отсутствии чатов только после завершения загрузки
-                    if self.viewModel.chats.isEmpty {
-                        self.errorLabel.text = "Нет доступных чатов. Нажмите OK для повторной загрузки."
+                    if self.viewModel.chats.isEmpty && !self.viewModel.canLoadMoreChats { // Если чатов нет и больше не будет
+                        self.errorLabel.text = "Нет доступных чатов."
                         self.errorLabel.isHidden = false
                     }
                 }
             }
             .store(in: &cancellables)
+
+        // Отдельный биндинг для isLoadingMore, если нужен другой UI (например, маленький спиннер внизу)
+        // viewModel.$isLoadingMore
+        //     .receive(on: DispatchQueue.main)
+        //     .sink { [weak self] isLoadingMore in
+        //         // Показать/скрыть индикатор дозагрузки
+        //     }
+        //     .store(in: &cancellables)
         
         viewModel.$loadingProgress
             .receive(on: DispatchQueue.main)
             .sink { [weak self] progress in
-                guard let self = self else { return }
-                self.progressLabel.text = progress
-                
-                // Если прогресс загрузки пустой, скрываем метку
-                if progress.isEmpty {
-                    self.progressLabel.isHidden = true
-                    // Также останавливаем индикатор, если он все еще анимирует
-                    if self.loadingIndicator.isAnimating {
-                        self.loadingIndicator.stopAnimating()
-                    }
+                // Отображаем прогресс только если это не дозагрузка (isLoadingMore == false)
+                if !(self?.viewModel.isLoadingMore ?? false) {
+                    self?.progressLabel.text = progress
                 }
             }
             .store(in: &cancellables)
@@ -142,46 +137,29 @@ final class ChatListViewController: UICollectionViewController {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] error in
                 guard let self = self, let error = error else { return }
-                self.errorLabel.text = "Ошибка: \(error.localizedDescription)"
-                self.errorLabel.isHidden = false
-                
-                // Останавливаем индикатор загрузки при ошибке
-                self.loadingIndicator.stopAnimating()
-                self.progressLabel.isHidden = true
-                
-                // Автоматически пробуем еще раз через 5 секунд
-                DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
-                    self.loadChats()
+                // Показываем ошибку только если это не ошибка пагинации (или обрабатываем ее иначе)
+                if !self.viewModel.isLoadingMore { 
+                    self.errorLabel.text = "Ошибка: \(error.localizedDescription). Повторная попытка через 5 сек."
+                    self.errorLabel.isHidden = false
+                    self.loadingIndicator.stopAnimating()
+                    self.progressLabel.isHidden = true
+                    
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
+                        // Повторяем только начальную загрузку при критической ошибке
+                        Task { await self.viewModel.loadInitialChats() }
+                    }
                 }
             }
             .store(in: &cancellables)
     }
     
-    override func viewDidAppear(_ animated: Bool) {
-        super.viewDidAppear(animated)
-        // Загружаем чаты только если они еще не загружены и не загружаются
-        if viewModel.chats.isEmpty && !viewModel.isLoading {
-            print("ChatListViewController: Запуск загрузки чатов из viewDidAppear")
-            loadChats()
-        } else if !viewModel.chats.isEmpty {
-            print("ChatListViewController: Чаты уже загружены, пропускаем повторную загрузку")
-            // Убедимся, что индикатор загрузки скрыт
-            loadingIndicator.stopAnimating()
-            progressLabel.isHidden = true
-        } else if viewModel.isLoading {
-            print("ChatListViewController: Загрузка чатов уже идет, ожидаем")
-        }
-    }
-    
-    private func loadChats() {
-        Task {
-            try? await viewModel.loadChats()
-        }
-    }
+    // Удаляем viewDidAppear и loadChats(), ViewModel управляет этим
+    // override func viewDidAppear(_ animated: Bool) { ... }
+    // private func loadChats() { ... }
     
     override func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int {
         let count = viewModel.chats.count
-        print("ChatListViewController: numberOfItemsInSection: \(count)")
+        // print("ChatListViewController: numberOfItemsInSection: \(count)") // Уже логируется в $chats.sink
         return count
     }
     
@@ -195,7 +173,6 @@ final class ChatListViewController: UICollectionViewController {
     override func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
         let chat = viewModel.chats[indexPath.item]
         
-        // Проверяем, есть ли уже открытый MessagesViewController
         if let appDelegate = UIApplication.shared.delegate as? AppDelegate,
            let existingVC = appDelegate.messagesViewController,
            existingVC.chatId == chat.id {
@@ -205,10 +182,20 @@ final class ChatListViewController: UICollectionViewController {
         }
         
         let messagesVC = MessagesViewController(chatId: chat.id, client: viewModel.client)
-        if let appDelegate = UIApplication.shared.delegate as? AppDelegate {
-            appDelegate.setMessagesViewController(messagesVC)
-        }
+        // Установка messagesViewController в AppDelegate теперь делается внутри MessagesViewController
         navigationController?.pushViewController(messagesVC, animated: true)
+    }
+
+    // Пагинация: загрузка следующих чатов при отображении одной из последних ячеек
+    override func collectionView(_ collectionView: UICollectionView, willDisplay cell: UICollectionViewCell, forItemAt indexPath: IndexPath) {
+        let chatsCount = viewModel.chats.count
+        // Загружаем следующую порцию, если это одна из последних 5 ячеек, есть что грузить и не идет уже загрузка
+        if indexPath.item >= chatsCount - 5 && viewModel.canLoadMoreChats && !viewModel.isLoadingMore && !viewModel.isLoading {
+            print("ChatListViewController: Запрос на дозагрузку чатов...")
+            Task {
+                await viewModel.loadMoreChats()
+            }
+        }
     }
     
     override func didUpdateFocus(in context: UIFocusUpdateContext, with coordinator: UIFocusAnimationCoordinator) {
@@ -223,14 +210,27 @@ final class ChatListViewController: UICollectionViewController {
             }
         }
         
-        // Если ошибка видна и пользователь нажимает OK, пробуем загрузить чаты снова
-        if !errorLabel.isHidden && context.nextFocusedView == errorLabel {
+        // Если ошибка видна (не ошибка пагинации) и пользователь нажимает на нее (фокусируется)
+        if !errorLabel.isHidden && context.nextFocusedView == errorLabel && !viewModel.isLoadingMore {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                self.loadChats()
+                Task { await self.viewModel.loadInitialChats() } // Повторная попытка начальной загрузки
             }
         }
     }
 }
+
+// Добавляем UICollectionViewDelegateFlowLayout для управления размерами ячеек
+extension ChatListViewController: UICollectionViewDelegateFlowLayout {
+    func collectionView(_ collectionView: UICollectionView, layout collectionViewLayout: UICollectionViewLayout, sizeForItemAt indexPath: IndexPath) -> CGSize {
+        // Например, 2 ячейки в ряд с отступами
+        let padding: CGFloat = 50 // отступы секции (лево/право)
+        let interitemSpacing: CGFloat = 20 // минимальный отступ между ячейками
+        let availableWidth = collectionView.bounds.width - (padding * 2) - interitemSpacing
+        let itemWidth = availableWidth / 2
+        return CGSize(width: itemWidth, height: 200) // Высота фиксированная или также можно вычислять
+    }
+}
+
 
 final class ChatCell: UICollectionViewCell {
     private let titleLabel = UILabel()
@@ -251,9 +251,13 @@ final class ChatCell: UICollectionViewCell {
         
         titleLabel.textColor = .white
         titleLabel.font = .systemFont(ofSize: 24, weight: .bold)
+        titleLabel.numberOfLines = 1 // Ограничим одной строкой для заголовка
+        titleLabel.lineBreakMode = .byTruncatingTail
         
         messageLabel.textColor = .lightGray
         messageLabel.font = .systemFont(ofSize: 18)
+        messageLabel.numberOfLines = 2 // Ограничим двумя строками для сообщения
+        messageLabel.lineBreakMode = .byTruncatingTail
         
         let stack = UIStackView(arrangedSubviews: [titleLabel, messageLabel])
         stack.axis = .vertical
@@ -264,7 +268,9 @@ final class ChatCell: UICollectionViewCell {
         NSLayoutConstraint.activate([
             stack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
             stack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
-            stack.centerYAnchor.constraint(equalTo: contentView.centerYAnchor)
+            // stack.centerYAnchor.constraint(equalTo: contentView.centerYAnchor) // Лучше привязать к top/bottom или задать отступы
+            stack.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 16),
+            stack.bottomAnchor.constraint(lessThanOrEqualTo: contentView.bottomAnchor, constant: -16) // Чтобы текст не вылезал
         ])
     }
     

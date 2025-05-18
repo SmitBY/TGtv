@@ -48,3 +48,7 @@ iOSInjectionProject/
 # Остальное
 *.swp
 *.bak 
+
+# Rules
+rules/
+.cursor/rules/ 

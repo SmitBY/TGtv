@@ -8,7 +8,7 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
     private let client: TDLibClient
     private var messages: [TG.Message] = []
     private var cancellables = Set<AnyCancellable>()
-    private var isLoading = false
+    private(set) var isLoading = false
     private var selectedVideoIndexPath: IndexPath?
     private weak var currentlyPlayingVideoCell: MessageCell?
     
@@ -102,18 +102,18 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         print("MessagesViewController: viewWillAppear для чата \(chatId)")
-        navigationController?.setNavigationBarHidden(true, animated: false)
         
-        // Устанавливаем этот контроллер как текущий в AppDelegate
         if let appDelegate = UIApplication.shared.delegate as? AppDelegate {
-            appDelegate.setMessagesViewController(self)
-            print("MessagesViewController: Установлен как текущий VC в AppDelegate из viewWillAppear")
+            if appDelegate.messagesViewController !== self {
+                print("MessagesViewController: Установлен как текущий VC в AppDelegate из viewWillAppear")
+                appDelegate.setMessagesViewController(self)
+            }
         }
     }
     
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
-        print("MessagesViewController: viewDidAppear")
+        print("MessagesViewController: viewDidAppear для чата \(chatId)")
     }
     
     override var preferredFocusEnvironments: [UIFocusEnvironment] {
@@ -129,17 +129,28 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
         super.viewDidDisappear(animated)
         print("MessagesViewController: viewDidDisappear для чата \(chatId)")
         
+        // Добавляем подробное логирование состояний
+        let movingFromParent = isMovingFromParent
+        let beingDismissed = isBeingDismissed
+        // Проверяем, является ли этот контроллер все еще верхним в стеке навигации
+        // Это может дать подсказку, был ли он убран стандартным pop/dismiss или чем-то более глобальным
+        let isStillTopViewController = navigationController?.topViewController === self
+        let isStillVisibleViewController = navigationController?.viewControllers.contains(self) ?? false && view.window != nil
+
+        print("MessagesViewController disappearing states: isMovingFromParent=\(movingFromParent), isBeingDismissed=\(beingDismissed), isStillTopViewController=\(isStillTopViewController), isStillVisibleViewController=\(isStillVisibleViewController)")
+
         // Если контроллер удаляется из стека навигации или закрывается модально,
         // обнуляем ссылку в AppDelegate
-        if isMovingFromParent || isBeingDismissed {
-            print("MessagesViewController: Контроллер удаляется (isMovingFromParent: \(isMovingFromParent), isBeingDismissed: \(isBeingDismissed))")
-            if let appDelegate = UIApplication.shared.delegate as? AppDelegate,
-               appDelegate.messagesViewController === self { // Доп. проверка, что мы обнуляем именно себя
-                print("MessagesViewController: Обнуляем ссылку на себя в AppDelegate из viewDidDisappear")
-                appDelegate.setMessagesViewController(nil)
+        if movingFromParent || beingDismissed {
+            print("MessagesViewController: Контроллер удаляется (isMovingFromParent: \(movingFromParent), isBeingDismissed: \(beingDismissed))")
+            if let appDelegate = UIApplication.shared.delegate as? AppDelegate {
+                if appDelegate.messagesViewController === self {
+                    print("MessagesViewController: Обнуляем ссылку на себя в AppDelegate из viewDidDisappear")
+                    appDelegate.setMessagesViewController(nil)
+                }
             }
         } else {
-            print("MessagesViewController: Контроллер не удаляется, ссылка в AppDelegate сохраняется")
+            print("MessagesViewController: Контроллер не удаляется (или не из-за навигации/dismiss), ссылка в AppDelegate сохраняется")
         }
     }
     
@@ -162,7 +173,7 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
         // Добавляем кнопку назад
         let backButton = UIButton(type: .system)
         backButton.translatesAutoresizingMaskIntoConstraints = false
-        backButton.setTitle("< Назад", for: .normal)
+        backButton.setTitle("Назад", for: .normal)
         backButton.titleLabel?.font = .systemFont(ofSize: 22, weight: .bold)
         backButton.setTitleColor(.white, for: .normal)
         backButton.addTarget(self, action: #selector(backButtonTapped), for: .primaryActionTriggered)
@@ -187,15 +198,15 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
         view.addSubview(messageLabel)
         
         NSLayoutConstraint.activate([
-            backButton.topAnchor.constraint(equalTo: view.topAnchor, constant: 50),
-            backButton.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 50),
+            backButton.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -50),
+            backButton.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -40),
             backButton.widthAnchor.constraint(equalToConstant: 120),
             backButton.heightAnchor.constraint(equalToConstant: 50),
             
-            tableView.topAnchor.constraint(equalTo: backButton.bottomAnchor, constant: 20),
+            tableView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 20),
             tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            tableView.bottomAnchor.constraint(equalTo: backButton.topAnchor, constant: -20),
             
             loadingIndicator.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             loadingIndicator.centerYAnchor.constraint(equalTo: view.centerYAnchor, constant: -50),
@@ -280,7 +291,7 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
     }
     
     private func handleDeletedMessages(_ deletedMessageIds: [Int64]) {
-        let initialCount = messages.count
+        let _ = messages.count
         var indexPathsToDelete: [IndexPath] = []
         var indicesToDelete: IndexSet = []
         
@@ -331,19 +342,30 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
         // Сохраняем (закрепляем) self в AppDelegate, чтобы предотвратить снятие ссылки
         if let appDelegate = UIApplication.shared.delegate as? AppDelegate {
             appDelegate.setMessagesViewController(self)
+            print("MessagesViewController: Установлен как текущий VC в AppDelegate перед началом загрузки. ChatID: \(chatId)")
         }
         
-        Task {
+        _ = Task {
             do {
                 print("MessagesViewController: Загрузка истории чата \(chatId)")
                 
                 // Сохраняем self в AppDelegate еще раз перед асинхронным запросом
+                // и логируем текущее состояние
                 await MainActor.run {
                     if let appDelegate = UIApplication.shared.delegate as? AppDelegate {
                         appDelegate.setMessagesViewController(self)
+                        print("MessagesViewController: Установлен как текущий VC в AppDelegate перед getChatHistory. Текущий VC в AppDelegate: \(appDelegate.messagesViewController === self ? "self" : "другой или nil")")
                     }
                 }
                 
+                // Проверяем, что задача не была отменена перед запросом
+                if Task.isCancelled {
+                    print("MessagesViewController: Задача загрузки сообщений отменена перед запросом")
+                    await MainActor.run { isLoading = false }
+                    return
+                }
+                
+                print("MessagesViewController: Начинаем вызов client.getChatHistory для чата \(chatId).")
                 let history = try await client.getChatHistory(
                     chatId: chatId,
                     fromMessageId: 0,
@@ -352,17 +374,45 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
                     onlyLocal: false
                 )
                 
+                // Проверяем, что задача не была отменена после запроса
+                if Task.isCancelled {
+                    print("MessagesViewController: Задача загрузки сообщений отменена после запроса")
+                    await MainActor.run { isLoading = false }
+                    return
+                }
+                
                 print("MessagesViewController: Получено \(history.messages?.count ?? 0) сообщений")
                 
                 // Убеждаемся, что self все еще является активным контроллером в AppDelegate
                 await MainActor.run {
-                    if let appDelegate = UIApplication.shared.delegate as? AppDelegate {
-                        appDelegate.setMessagesViewController(self)
+                    // Проверяем, что контроллер все еще в окне (не был закрыт/выгружен)
+                    guard self.view.window != nil else {
+                        print("MessagesViewController: Вид не находится в окне. Возможно, контроллер был закрыт. Прерываем обновление UI.")
+                        self.isLoading = false // Важно сбросить флаг
+                        return
                     }
                     
+                    guard let appDelegate = UIApplication.shared.delegate as? AppDelegate,
+                          appDelegate.messagesViewController === self else {
+                        print("MessagesViewController: Загрузка сообщений завершена (успешно), но контроллер уже не активен в AppDelegate или был заменен. ChatID: \(self.chatId). Прерываем обновление UI.")
+                        self.isLoading = false // Важно сбросить флаг
+                        return
+                    }
+                    
+                    // Дополнительная проверка, что мы все еще в стеке навигации
+                    guard let navController = self.navigationController,
+                          navController.topViewController === self else {
+                        print("MessagesViewController: Контроллер больше не является верхним в стеке навигации. Прерываем обновление UI.")
+                        self.isLoading = false // Важно сбросить флаг
+                        return
+                    }
+                    
+                    // appDelegate.setMessagesViewController(self) // Уже установлено выше и проверено guard-ом
+
                     if let historyMessages = history.messages {
                         if !historyMessages.isEmpty {
-                            messages = historyMessages.map { message in
+                            // Разворачиваем массив сообщений, чтобы новые были внизу
+                            messages = historyMessages.reversed().map { message in
                                 TG.Message(
                                     id: message.id,
                                     text: getMessageText(from: message),
@@ -419,14 +469,23 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
                     }
                 }
             } catch {
-                print("MessagesViewController: Ошибка загрузки сообщений: \(error)")
+                let errorDescription = String(describing: error)
+                let errorType = type(of: error)
+                print("MessagesViewController: Ошибка загрузки сообщений для чата \(chatId): \(errorDescription). Тип ошибки: \(errorType)")
+
+                let nsError = error as NSError
+                print("MessagesViewController: NSError: domain=\(nsError.domain), code=\(nsError.code), userInfo=\(nsError.userInfo)")
                 
-                // Закрепляем self в AppDelegate даже при ошибке
+                // Закрепляем self в AppDelegate даже при ошибке, но сначала проверяем, актуален ли контроллер
                 await MainActor.run {
-                    if let appDelegate = UIApplication.shared.delegate as? AppDelegate {
-                        appDelegate.setMessagesViewController(self)
+                    guard let appDelegate = UIApplication.shared.delegate as? AppDelegate,
+                          appDelegate.messagesViewController === self else {
+                        print("MessagesViewController: Ошибка загрузки сообщений, но контроллер уже не активен в AppDelegate или был заменен. ChatID: \(self.chatId). Прерываем обновление UI ошибки.")
+                        self.isLoading = false // Важно сбросить флаг
+                        return
                     }
-                    
+                    // appDelegate.setMessagesViewController(self) // Уже установлено и проверено
+
                     loadingIndicator.stopAnimating()
                     messageLabel.text = "Ошибка при загрузке сообщений: \(error.localizedDescription)"
                     
@@ -541,10 +600,11 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
             }
         }
         // Старая логика для MessageCell, если она где-то осталась (должна быть удалена)
-        for cell in tableView.visibleCells {
-            if let messageCell = cell as? MessageCell {
-                // messageCell.stopAndCleanupPlayer() // Этот метод удален
-            }
+        for _ in tableView.visibleCells {
+            // Удаляем этот блок, так как messageCell не используется и логика устарела
+            // if let messageCell = cell as? MessageCell {
+            //     // messageCell.stopAndCleanupPlayer() // Этот метод удален
+            // }
         }
     }
     

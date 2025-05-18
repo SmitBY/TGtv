@@ -32,6 +32,8 @@ class AuthService {
             isChangingAuthState = false
         case .updateOption:
             print("AuthService: Получено обновление опций")
+        case .updateChatPosition:
+            print("AuthService: Получено обновление позиции чата, игнорируется в AuthService")
         default:
             print("AuthService: Необработанное обновление: \(update)")
         }
@@ -186,5 +188,27 @@ class AuthService {
             print("AuthService: Ошибка получения состояния: \(error)")
         }
         isChangingAuthState = false
+    }
+    
+    private func loadChats() {
+        print("AuthService: Загрузка чатов...")
+        
+        Task {
+            do {
+                try await client.loadChats(
+                    chatList: .chatListMain,
+                    limit: 20
+                )
+                print("AuthService: Чаты успешно загружены")
+            } catch let error as TDLibKit.Error {
+                if error.code == 404 {
+                    print("AuthService: Чат-лист пуст, это нормально при первом запуске")
+                    return
+                }
+                print("AuthService: Ошибка загрузки чатов: \(error)")
+            } catch {
+                print("AuthService: Неизвестная ошибка загрузки чатов: \(error)")
+            }
+        }
     }
 } 
