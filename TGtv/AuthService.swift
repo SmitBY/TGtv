@@ -70,7 +70,9 @@ class AuthService {
         case .authorizationStateReady:
             print("AuthService: Авторизация успешна")
             needPassword = false
-            isAuthorized = true
+            if !isAuthorized {
+                isAuthorized = true
+            }
             
             if chatLoadRetryCount < maxChatLoadRetries && !isChatLoadingInProgress {
                 Task {
@@ -92,13 +94,19 @@ class AuthService {
             }
         case .authorizationStateLoggingOut:
             print("AuthService: Выполняется выход")
-            isAuthorized = false
+            if isAuthorized {
+                isAuthorized = false
+            }
         case .authorizationStateClosing:
             print("AuthService: Закрытие соединения")
-            isAuthorized = false
+            if isAuthorized {
+                isAuthorized = false
+            }
         case .authorizationStateClosed:
             print("AuthService: Соединение закрыто")
-            isAuthorized = false
+            if isAuthorized {
+                isAuthorized = false
+            }
             Task {
                 await checkAuthState()
             }

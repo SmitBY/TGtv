@@ -2,11 +2,21 @@ import UIKit
 import Combine
 
 final class ChatListViewController: UICollectionViewController {
+    // Определяем тип секции для DiffableDataSource
+    enum Section: CaseIterable {
+        case main
+    }
+    
     private let viewModel: ChatListViewModel
     private var cancellables = Set<AnyCancellable>()
     private let loadingIndicator = UIActivityIndicatorView(style: .large)
     private let progressLabel = UILabel()
     private let errorLabel = UILabel()
+    private let searchContainer = UIVisualEffectView(effect: UIBlurEffect(style: .dark))
+    private let searchField = UITextField()
+    
+    // Свойство для DiffableDataSource
+    private var dataSource: UICollectionViewDiffableDataSource<Section, TG.Chat>!
     
     init(viewModel: ChatListViewModel) {
         self.viewModel = viewModel
@@ -23,14 +33,18 @@ final class ChatListViewController: UICollectionViewController {
     
     override func viewDidLoad() {
         super.viewDidLoad()
+        setupSearchBar()
         setupCollectionView()
         setupLoadingIndicator()
+        configureDataSource() // Настраиваем DiffableDataSource
         setupBindings()
     }
     
     private func setupCollectionView() {
         collectionView.register(ChatCell.self, forCellWithReuseIdentifier: "ChatCell")
         collectionView.backgroundColor = .black
+        collectionView.contentInset.top = 140
+        collectionView.scrollIndicatorInsets = collectionView.contentInset
         
         // Настройка для tvOS
         collectionView.remembersLastFocusedIndexPath = true
@@ -39,6 +53,43 @@ final class ChatListViewController: UICollectionViewController {
             layout.scrollDirection = .vertical
             layout.sectionInset = UIEdgeInsets(top: 50, left: 50, bottom: 50, right: 50)
         }
+    }
+    
+    private func setupSearchBar() {
+        searchContainer.translatesAutoresizingMaskIntoConstraints = false
+        searchContainer.layer.cornerRadius = 20
+        searchContainer.clipsToBounds = true
+        view.addSubview(searchContainer)
+        
+        searchField.translatesAutoresizingMaskIntoConstraints = false
+        searchField.delegate = self
+        searchField.placeholder = "Поиск"
+        searchField.textColor = .white
+        searchField.font = .systemFont(ofSize: 28, weight: .regular)
+        searchField.autocapitalizationType = .none
+        searchField.autocorrectionType = .no
+        searchField.returnKeyType = .search
+        searchField.clearButtonMode = .whileEditing
+        searchField.backgroundColor = UIColor(white: 1, alpha: 0.08)
+        searchField.layer.cornerRadius = 16
+        searchField.layer.masksToBounds = true
+        let paddingView = UIView(frame: CGRect(x: 0, y: 0, width: 16, height: 50))
+        searchField.leftView = paddingView
+        searchField.leftViewMode = .always
+        searchField.addTarget(self, action: #selector(searchTextDidChange(_:)), for: .editingChanged)
+        searchContainer.contentView.addSubview(searchField)
+        
+        NSLayoutConstraint.activate([
+            searchContainer.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 16),
+            searchContainer.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 80),
+            searchContainer.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -80),
+            searchContainer.heightAnchor.constraint(equalToConstant: 80),
+            
+            searchField.leadingAnchor.constraint(equalTo: searchContainer.leadingAnchor, constant: 0),
+            searchField.trailingAnchor.constraint(equalTo: searchContainer.trailingAnchor, constant: 0),
+            searchField.topAnchor.constraint(equalTo: searchContainer.topAnchor),
+            searchField.bottomAnchor.constraint(equalTo: searchContainer.bottomAnchor)
+        ])
     }
     
     private func setupLoadingIndicator() {
@@ -79,24 +130,31 @@ final class ChatListViewController: UICollectionViewController {
         ])
     }
     
+    private func configureDataSource() {
+        dataSource = UICollectionViewDiffableDataSource<Section, TG.Chat>(collectionView: collectionView) { (collectionView, indexPath, chat) -> UICollectionViewCell? in
+            let cell = collectionView.dequeueReusableCell(withReuseIdentifier: "ChatCell", for: indexPath) as! ChatCell
+            cell.configure(with: chat)
+            return cell
+        }
+        // Применяем начальный пустой снимок, чтобы dataSource был готов
+        var initialSnapshot = NSDiffableDataSourceSnapshot<Section, TG.Chat>()
+        initialSnapshot.appendSections([.main])
+        initialSnapshot.appendItems([])
+        dataSource.apply(initialSnapshot, animatingDifferences: false)
+    }
+    
     private func setupBindings() {
-        viewModel.$chats
+        viewModel.$filteredChats
             .receive(on: DispatchQueue.main)
             .sink { [weak self] chats in
                 guard let self = self else { return }
-                print("ChatListViewController: Получено \(chats.count) чатов")
-                self.collectionView.reloadData()
+                print("ChatListViewController: Получено \(chats.count) чатов для DiffableDataSource")
                 
-                // Скрываем сообщение об ошибке, если есть чаты
-                if !chats.isEmpty {
-                    self.errorLabel.isHidden = true
-                    
-                    // Если есть чаты, загрузка должна быть завершена - скрываем индикатор
-                    if self.loadingIndicator.isAnimating {
-                        self.loadingIndicator.stopAnimating()
-                        self.progressLabel.isHidden = true
-                    }
-                }
+                var snapshot = NSDiffableDataSourceSnapshot<Section, TG.Chat>()
+                snapshot.appendSections([.main])
+                snapshot.appendItems(chats, toSection: .main)
+                self.dataSource.apply(snapshot, animatingDifferences: true) // Можно настроить анимацию
+                self.updateEmptyState(for: chats)
             }
             .store(in: &cancellables)
         
@@ -112,11 +170,7 @@ final class ChatListViewController: UICollectionViewController {
                     self.loadingIndicator.stopAnimating()
                     self.progressLabel.isHidden = true
                     
-                    // Показываем сообщение об отсутствии чатов только после завершения загрузки
-                    if self.viewModel.chats.isEmpty {
-                        self.errorLabel.text = "Нет доступных чатов. Нажмите OK для повторной загрузки."
-                        self.errorLabel.isHidden = false
-                    }
+                    self.updateEmptyState(for: self.viewModel.filteredChats)
                 }
             }
             .store(in: &cancellables)
@@ -173,27 +227,44 @@ final class ChatListViewController: UICollectionViewController {
         }
     }
     
+    private func updateEmptyState(for chats: [TG.Chat]) {
+        if !chats.isEmpty {
+            errorLabel.isHidden = true
+            if loadingIndicator.isAnimating {
+                loadingIndicator.stopAnimating()
+            }
+            progressLabel.isHidden = true
+            return
+        }
+        
+        if !viewModel.searchQuery.isEmpty {
+            errorLabel.text = "Ничего не найдено"
+            errorLabel.textColor = .lightGray
+            errorLabel.isHidden = false
+            loadingIndicator.stopAnimating()
+            progressLabel.isHidden = true
+        } else if !viewModel.isLoading && viewModel.chats.isEmpty {
+            errorLabel.text = "Нет доступных чатов. Нажмите OK для повторной загрузки."
+            errorLabel.textColor = .red
+            errorLabel.isHidden = false
+        } else {
+            errorLabel.isHidden = true
+        }
+    }
+    
     private func loadChats() {
         Task {
             try? await viewModel.loadChats()
         }
     }
     
-    override func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int {
-        let count = viewModel.chats.count
-        print("ChatListViewController: numberOfItemsInSection: \(count)")
-        return count
-    }
-    
-    override func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
-        let cell = collectionView.dequeueReusableCell(withReuseIdentifier: "ChatCell", for: indexPath) as! ChatCell
-        let chat = viewModel.chats[indexPath.item]
-        cell.configure(with: chat)
-        return cell
-    }
-    
     override func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
-        let chat = viewModel.chats[indexPath.item]
+        // Получаем элемент из dataSource, а не из viewModel.chats напрямую, на случай если они рассинхронизированы
+        // (хотя при правильном использовании DiffableDataSource они должны быть синхронны)
+        guard let chat = dataSource.itemIdentifier(for: indexPath) else {
+            print("ChatListViewController: Не удалось получить чат для indexPath \(indexPath) из dataSource")
+            return
+        }
         
         // Проверяем, есть ли уже открытый MessagesViewController
         if let appDelegate = UIApplication.shared.delegate as? AppDelegate,
@@ -229,6 +300,30 @@ final class ChatListViewController: UICollectionViewController {
                 self.loadChats()
             }
         }
+    }
+    
+    @objc private func searchTextDidChange(_ sender: UITextField) {
+        Task { @MainActor [weak self] in
+            self?.viewModel.updateSearchQuery(sender.text ?? "")
+        }
+    }
+    
+    private func closeKeyboard() {
+        searchField.resignFirstResponder()
+    }
+}
+
+extension ChatListViewController: UITextFieldDelegate {
+    func textFieldShouldReturn(_ textField: UITextField) -> Bool {
+        closeKeyboard()
+        return true
+    }
+    
+    func textFieldShouldClear(_ textField: UITextField) -> Bool {
+        Task { @MainActor [weak self] in
+            self?.viewModel.updateSearchQuery("")
+        }
+        return true
     }
 }
 

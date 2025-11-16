@@ -7,6 +7,10 @@ import AVKit
 final class MessagesViewController: UIViewController, AVPlayerViewControllerDelegate {
     private let client: TDLibClient
     private var messages: [TG.Message] = []
+    private let pageSize: Int = 50
+    private var canLoadMoreHistory = true
+    private var isLoadingOlderMessages = false
+    private var loadedMessageIds = Set<Int64>()
     private var cancellables = Set<AnyCancellable>()
     private(set) var isLoading = false
     private var selectedVideoIndexPath: IndexPath?
@@ -114,6 +118,11 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         print("MessagesViewController: viewDidAppear для чата \(chatId)")
+        
+        if !messages.isEmpty {
+            scrollToBottom(animated: false)
+            focusLatestMessageAfterReload(delay: 0)
+        }
     }
     
     override var preferredFocusEnvironments: [UIFocusEnvironment] {
@@ -269,9 +278,15 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
             date: Date(timeIntervalSince1970: TimeInterval(message.date))
         )
         
+        if loadedMessageIds.contains(newMessage.id) {
+            print("MessagesViewController: Сообщение \(newMessage.id) уже отображено, пропускаем добавление")
+            return
+        }
+        
         // Добавляем новое сообщение и обновляем таблицу через batch updates
         let newIndex = messages.count
         messages.append(newMessage)
+        loadedMessageIds.insert(newMessage.id)
         let indexPath = IndexPath(row: newIndex, section: 0)
         
         tableView.performBatchUpdates({
@@ -294,12 +309,14 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
         let _ = messages.count
         var indexPathsToDelete: [IndexPath] = []
         var indicesToDelete: IndexSet = []
+        var idsToDelete: [Int64] = []
         
         // Находим индексы сообщений, которые нужно удалить
         for (index, message) in messages.enumerated() {
             if deletedMessageIds.contains(message.id) {
                 indexPathsToDelete.append(IndexPath(row: index, section: 0))
                 indicesToDelete.insert(index)
+                idsToDelete.append(message.id)
             }
         }
         
@@ -315,6 +332,7 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
         tableView.performBatchUpdates({
             // Удаляем сообщения из источника данных *после* получения индексов
             messages.remove(atOffsets: indicesToDelete)
+            idsToDelete.forEach { loadedMessageIds.remove($0) }
             tableView.deleteRows(at: indexPathsToDelete, with: .automatic)
         }) { completed in
             if completed {
@@ -333,190 +351,259 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
     
     private func loadMessages() {
         guard !isLoading else { return }
+        print("FirstLoad::Start chatId=\(chatId)")
         
         isLoading = true
+        canLoadMoreHistory = true
+        isLoadingOlderMessages = false
+        loadedMessageIds.removeAll()
+        
         loadingIndicator.startAnimating()
         messageLabel.isHidden = false
         messageLabel.text = "Загрузка сообщений..."
         
-        // Сохраняем (закрепляем) self в AppDelegate, чтобы предотвратить снятие ссылки
         if let appDelegate = UIApplication.shared.delegate as? AppDelegate {
             appDelegate.setMessagesViewController(self)
             print("MessagesViewController: Установлен как текущий VC в AppDelegate перед началом загрузки. ChatID: \(chatId)")
         }
         
-        _ = Task {
+        _ = Task { [weak self] in
+            guard let self else { return }
             do {
-                print("MessagesViewController: Загрузка истории чата \(chatId)")
-                
-                // Сохраняем self в AppDelegate еще раз перед асинхронным запросом
-                // и логируем текущее состояние
-                await MainActor.run {
-                    if let appDelegate = UIApplication.shared.delegate as? AppDelegate {
-                        appDelegate.setMessagesViewController(self)
-                        print("MessagesViewController: Установлен как текущий VC в AppDelegate перед getChatHistory. Текущий VC в AppDelegate: \(appDelegate.messagesViewController === self ? "self" : "другой или nil")")
-                    }
-                }
-                
-                // Проверяем, что задача не была отменена перед запросом
-                if Task.isCancelled {
-                    print("MessagesViewController: Задача загрузки сообщений отменена перед запросом")
-                    await MainActor.run { isLoading = false }
-                    return
-                }
-                
-                print("MessagesViewController: Начинаем вызов client.getChatHistory для чата \(chatId).")
-                let history = try await client.getChatHistory(
-                    chatId: chatId,
+                print("MessagesViewController: Загрузка истории чата \(self.chatId)")
+                let primaryHistory = try await self.client.getChatHistory(
+                    chatId: self.chatId,
                     fromMessageId: 0,
-                    limit: 50,
-                    offset: 0,
+                    limit: self.pageSize,
+                    offset: -self.pageSize,
                     onlyLocal: false
                 )
                 
-                // Проверяем, что задача не была отменена после запроса
-                if Task.isCancelled {
-                    print("MessagesViewController: Задача загрузки сообщений отменена после запроса")
-                    await MainActor.run { isLoading = false }
-                    return
+                var historyMessages = primaryHistory.messages ?? []
+                print("FirstLoad::HistoryReceived chatId=\(self.chatId) count=\(historyMessages.count) offset=-\(self.pageSize)")
+                
+                if historyMessages.isEmpty {
+                    print("FirstLoad::HistoryEmptyWithNegativeOffset chatId=\(self.chatId) — пробуем offset=0")
+                    let fallbackHistory = try await self.client.getChatHistory(
+                        chatId: self.chatId,
+                        fromMessageId: 0,
+                        limit: self.pageSize,
+                        offset: 0,
+                        onlyLocal: false
+                    )
+                    historyMessages = fallbackHistory.messages ?? []
+                    print("FirstLoad::HistoryReceivedFallback chatId=\(self.chatId) count=\(historyMessages.count)")
                 }
                 
-                print("MessagesViewController: Получено \(history.messages?.count ?? 0) сообщений")
-                
-                // Убеждаемся, что self все еще является активным контроллером в AppDelegate
-                await MainActor.run {
-                    // Проверяем, что контроллер все еще в окне (не был закрыт/выгружен)
-                    guard self.view.window != nil else {
-                        print("MessagesViewController: Вид не находится в окне. Возможно, контроллер был закрыт. Прерываем обновление UI.")
-                        self.isLoading = false // Важно сбросить флаг
-                        return
-                    }
-                    
-                    guard let appDelegate = UIApplication.shared.delegate as? AppDelegate,
-                          appDelegate.messagesViewController === self else {
-                        print("MessagesViewController: Загрузка сообщений завершена (успешно), но контроллер уже не активен в AppDelegate или был заменен. ChatID: \(self.chatId). Прерываем обновление UI.")
-                        self.isLoading = false // Важно сбросить флаг
-                        return
-                    }
-                    
-                    // Дополнительная проверка, что мы все еще в стеке навигации
-                    guard let navController = self.navigationController,
-                          navController.topViewController === self else {
-                        print("MessagesViewController: Контроллер больше не является верхним в стеке навигации. Прерываем обновление UI.")
-                        self.isLoading = false // Важно сбросить флаг
-                        return
-                    }
-                    
-                    // appDelegate.setMessagesViewController(self) // Уже установлено выше и проверено guard-ом
-
-                    if let historyMessages = history.messages {
-                        if !historyMessages.isEmpty {
-                            // Разворачиваем массив сообщений, чтобы новые были внизу
-                            messages = historyMessages.reversed().map { message in
-                                TG.Message(
-                                    id: message.id,
-                                    text: getMessageText(from: message),
-                                    isOutgoing: message.isOutgoing,
-                                    media: getMedia(from: message),
-                                    date: Date(timeIntervalSince1970: TimeInterval(message.date))
-                                )
-                            }
-                            
-                            loadingIndicator.stopAnimating()
-                            messageLabel.isHidden = true
-                            tableView.reloadData()
-                            
-                            // Даем время таблице обновиться и закрепляем self
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                                if let appDelegate = UIApplication.shared.delegate as? AppDelegate {
-                                    appDelegate.setMessagesViewController(self)
-                                }
-                                
-                                if self.messages.count > 0 {
-                                    let lastIndex = IndexPath(row: self.messages.count - 1, section: 0)
-                                    
-                                    // Сначала прокручиваем к последнему сообщению
-                                    self.tableView.scrollToRow(at: lastIndex, at: .bottom, animated: false)
-                                    
-                                    // Затем устанавливаем фокус и выделение
-                                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                                        if let appDelegate = UIApplication.shared.delegate as? AppDelegate {
-                                            appDelegate.setMessagesViewController(self)
-                                        }
-                                        
-                                        self.tableView.selectRow(at: lastIndex, animated: false, scrollPosition: .none)
-                                        
-                                        // Запрашиваем обновление фокуса системы для выбора последнего сообщения
-                                        self.setNeedsFocusUpdate()
-                                        self.updateFocusIfNeeded()
-                                        
-                                        // Проверяем, что ячейка выбрана
-                                        if let cell = self.tableView.cellForRow(at: lastIndex) as? MessageCell {
-                                            print("MessagesViewController: Устанавливаем фокус на последнее сообщение \(lastIndex.row)")
-                                            cell.setSelected(true, animated: true)
-                                        } else {
-                                            print("MessagesViewController: Не удалось получить ячейку для последнего сообщения")
-                                        }
-                                    }
-                                } else {
-                                    print("MessagesViewController: Нет сообщений для выбора")
-                                }
-                            }
-                        } else {
-                            loadingIndicator.stopAnimating()
-                            messageLabel.text = "Нет сообщений в этом чате"
-                        }
-                    }
+                await MainActor.run { [weak self] in
+                    self?.applyInitialHistory(historyMessages)
                 }
             } catch {
                 let errorDescription = String(describing: error)
                 let errorType = type(of: error)
-                print("MessagesViewController: Ошибка загрузки сообщений для чата \(chatId): \(errorDescription). Тип ошибки: \(errorType)")
-
+                print("MessagesViewController: Ошибка загрузки сообщений для чата \(self.chatId): \(errorDescription). Тип ошибки: \(errorType)")
                 let nsError = error as NSError
                 print("MessagesViewController: NSError: domain=\(nsError.domain), code=\(nsError.code), userInfo=\(nsError.userInfo)")
                 
-                // Закрепляем self в AppDelegate даже при ошибке, но сначала проверяем, актуален ли контроллер
-                await MainActor.run {
-                    guard let appDelegate = UIApplication.shared.delegate as? AppDelegate,
-                          appDelegate.messagesViewController === self else {
-                        print("MessagesViewController: Ошибка загрузки сообщений, но контроллер уже не активен в AppDelegate или был заменен. ChatID: \(self.chatId). Прерываем обновление UI ошибки.")
-                        self.isLoading = false // Важно сбросить флаг
-                        return
-                    }
-                    // appDelegate.setMessagesViewController(self) // Уже установлено и проверено
-
-                    loadingIndicator.stopAnimating()
-                    messageLabel.text = "Ошибка при загрузке сообщений: \(error.localizedDescription)"
-                    
-                    // Добавляем кнопку для повторной загрузки
-                    let retryButton = UIButton(type: .system)
-                    retryButton.translatesAutoresizingMaskIntoConstraints = false
-                    retryButton.setTitle("Повторить загрузку", for: .normal)
-                    retryButton.titleLabel?.font = .systemFont(ofSize: 22)
-                    retryButton.setTitleColor(.white, for: .normal)
-                    retryButton.backgroundColor = UIColor(red: 0, green: 0.5, blue: 1.0, alpha: 1.0)
-                    retryButton.layer.cornerRadius = 8
-                    retryButton.addTarget(self, action: #selector(retryLoadMessages), for: .primaryActionTriggered)
-                    view.addSubview(retryButton)
-                    
-                    NSLayoutConstraint.activate([
-                        retryButton.topAnchor.constraint(equalTo: messageLabel.bottomAnchor, constant: 20),
-                        retryButton.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-                        retryButton.widthAnchor.constraint(equalToConstant: 250),
-                        retryButton.heightAnchor.constraint(equalToConstant: 50)
-                    ])
+                await MainActor.run { [weak self] in
+                    self?.handleInitialHistoryError(error.localizedDescription)
                 }
             }
-            
-            isLoading = false
         }
+    }
+
+    private func applyInitialHistory(_ rawMessages: [TDLibKit.Message]) {
+        print("FirstLoad::ApplyHistory chatId=\(chatId) rawCount=\(rawMessages.count)")
+        defer { isLoading = false }
+        
+        guard !rawMessages.isEmpty else {
+            print("FirstLoad::EmptyHistory chatId=\(chatId)")
+            messages = []
+            loadedMessageIds.removeAll()
+            canLoadMoreHistory = false
+            loadingIndicator.stopAnimating()
+            messageLabel.isHidden = false
+            messageLabel.text = "Нет сообщений в этом чате"
+            tableView.reloadData()
+            return
+        }
+        
+        let normalizedMessages = rawMessages.reversed().map { makeTGMessage(from: $0) }
+        messages = normalizedMessages
+        loadedMessageIds = Set(normalizedMessages.map(\.id))
+        canLoadMoreHistory = rawMessages.count == Int(pageSize)
+        print("FirstLoad::Normalized chatId=\(chatId) normalizedCount=\(messages.count)")
+        
+        loadingIndicator.stopAnimating()
+        messageLabel.isHidden = true
+        tableView.reloadData()
+        tableView.layoutIfNeeded()
+        print("FirstLoad::ReloadComplete chatId=\(chatId) visibleRows=\(tableView.numberOfRows(inSection: 0))")
+        scrollToBottom(animated: false)
+        focusLatestMessageAfterReload()
+    }
+
+    private func handleInitialHistoryError(_ description: String) {
+        isLoading = false
+        loadingIndicator.stopAnimating()
+        messageLabel.isHidden = false
+        messageLabel.text = "Ошибка при загрузке сообщений: \(description)"
+        showRetryLoadButton()
+    }
+
+    private func showRetryLoadButton() {
+        if view.subviews.contains(where: { ($0 as? UIButton)?.accessibilityIdentifier == "retryLoadMessagesButton" }) {
+            return
+        }
+        
+        let retryButton = UIButton(type: .system)
+        retryButton.accessibilityIdentifier = "retryLoadMessagesButton"
+        retryButton.translatesAutoresizingMaskIntoConstraints = false
+        retryButton.setTitle("Повторить загрузку", for: .normal)
+        retryButton.titleLabel?.font = .systemFont(ofSize: 22)
+        retryButton.setTitleColor(.white, for: .normal)
+        retryButton.backgroundColor = UIColor(red: 0, green: 0.5, blue: 1.0, alpha: 1.0)
+        retryButton.layer.cornerRadius = 8
+        retryButton.addTarget(self, action: #selector(retryLoadMessages), for: .primaryActionTriggered)
+        view.addSubview(retryButton)
+        
+        NSLayoutConstraint.activate([
+            retryButton.topAnchor.constraint(equalTo: messageLabel.bottomAnchor, constant: 20),
+            retryButton.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            retryButton.widthAnchor.constraint(equalToConstant: 250),
+            retryButton.heightAnchor.constraint(equalToConstant: 50)
+        ])
+    }
+
+    private func focusLatestMessageAfterReload(delay: TimeInterval = 0.5) {
+        guard !messages.isEmpty else {
+            print("MessagesViewController: Нет сообщений для выбора")
+            return
+        }
+        
+        let lastIndex = IndexPath(row: messages.count - 1, section: 0)
+        let workItem = { [weak self] in
+            guard let self else { return }
+            if let appDelegate = UIApplication.shared.delegate as? AppDelegate {
+                appDelegate.setMessagesViewController(self)
+            }
+            
+            self.tableView.selectRow(at: lastIndex, animated: false, scrollPosition: .none)
+            self.setNeedsFocusUpdate()
+            self.updateFocusIfNeeded()
+            
+            if let cell = self.tableView.cellForRow(at: lastIndex) as? MessageCell {
+                print("MessagesViewController: Устанавливаем фокус на последнее сообщение \(lastIndex.row)")
+                cell.setSelected(true, animated: true)
+            } else {
+                print("MessagesViewController: Не удалось получить ячейку для последнего сообщения (focusLatestMessageAfterReload)")
+            }
+        }
+        
+        if delay > 0 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
+        } else {
+            DispatchQueue.main.async(execute: workItem)
+        }
+    }
+
+    private func messageId(for indexPath: IndexPath?) -> Int64? {
+        guard let indexPath,
+              messages.indices.contains(indexPath.row) else { return nil }
+        return messages[indexPath.row].id
+    }
+
+    private func loadOlderMessages() {
+        guard canLoadMoreHistory,
+              !isLoadingOlderMessages,
+              let oldestId = messages.first?.id else { return }
+        
+        isLoadingOlderMessages = true
+        
+        let firstVisibleMessageId = tableView.indexPathsForVisibleRows?
+            .sorted(by: { $0.row < $1.row })
+            .compactMap { messageId(for: $0) }
+            .first
+        let selectedMessageId = messageId(for: tableView.indexPathForSelectedRow)
+        
+        _ = Task { [weak self] in
+            guard let self else { return }
+            do {
+                print("MessagesViewController: Догружаем историю до сообщения \(oldestId)")
+                let history = try await self.client.getChatHistory(
+                    chatId: self.chatId,
+                    fromMessageId: oldestId,
+                    limit: self.pageSize,
+                    offset: -self.pageSize,
+                    onlyLocal: false
+                )
+                
+                await MainActor.run { [weak self] in
+                    self?.prependHistory(history.messages ?? [],
+                                         anchorMessageId: firstVisibleMessageId,
+                                         selectedMessageId: selectedMessageId)
+                }
+            } catch {
+                print("MessagesViewController: Ошибка догрузки старых сообщений: \(error)")
+            }
+            
+            await MainActor.run { [weak self] in
+                self?.isLoadingOlderMessages = false
+            }
+        }
+    }
+
+    private func prependHistory(_ rawMessages: [TDLibKit.Message],
+                                anchorMessageId: Int64?,
+                                selectedMessageId: Int64?) {
+        guard !rawMessages.isEmpty else {
+            canLoadMoreHistory = false
+            return
+        }
+        
+        let normalizedMessages = rawMessages.reversed().map { makeTGMessage(from: $0) }
+        let uniqueMessages = normalizedMessages.filter { !loadedMessageIds.contains($0.id) }
+        
+        guard !uniqueMessages.isEmpty else {
+            canLoadMoreHistory = false
+            return
+        }
+        
+        messages.insert(contentsOf: uniqueMessages, at: 0)
+        uniqueMessages.forEach { loadedMessageIds.insert($0.id) }
+        canLoadMoreHistory = rawMessages.count == Int(pageSize)
+        
+        tableView.reloadData()
+        tableView.layoutIfNeeded()
+        
+        if let anchorId = anchorMessageId,
+           let anchorRow = messages.firstIndex(where: { $0.id == anchorId }) {
+            let anchorIndexPath = IndexPath(row: anchorRow, section: 0)
+            tableView.scrollToRow(at: anchorIndexPath, at: .top, animated: false)
+        }
+        
+        if let selectedId = selectedMessageId,
+           let selectedRow = messages.firstIndex(where: { $0.id == selectedId }) {
+            let selectedIndexPath = IndexPath(row: selectedRow, section: 0)
+            tableView.selectRow(at: selectedIndexPath, animated: false, scrollPosition: .none)
+        }
+    }
+
+    private func makeTGMessage(from message: TDLibKit.Message) -> TG.Message {
+        TG.Message(
+            id: message.id,
+            text: getMessageText(from: message),
+            isOutgoing: message.isOutgoing,
+            media: getMedia(from: message),
+            date: Date(timeIntervalSince1970: TimeInterval(message.date))
+        )
     }
     
     @objc private func retryLoadMessages() {
         // Находим и удаляем кнопку повтора
         for subview in view.subviews {
-            if let button = subview as? UIButton, button.title(for: .normal) == "Повторить загрузку" {
+            if let button = subview as? UIButton,
+               button.accessibilityIdentifier == "retryLoadMessagesButton" {
                 button.removeFromSuperview()
                 break
             }
@@ -526,10 +613,11 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
         loadMessages()
     }
     
-    private func scrollToBottom() {
+    private func scrollToBottom(animated: Bool = true) {
         guard !messages.isEmpty else { return }
+        tableView.layoutIfNeeded()
         let lastIndex = IndexPath(row: messages.count - 1, section: 0)
-        tableView.scrollToRow(at: lastIndex, at: .bottom, animated: true)
+        tableView.scrollToRow(at: lastIndex, at: .bottom, animated: animated)
     }
     
     private func getMessageText(from message: TDLibKit.Message) -> String {
@@ -715,6 +803,12 @@ extension MessagesViewController: UITableViewDelegate, UITableViewDataSource {
         return UITableView.automaticDimension
     }
     
+    func tableView(_ tableView: UITableView, willDisplay cell: UITableViewCell, forRowAt indexPath: IndexPath) {
+        if indexPath.row == 0 {
+            loadOlderMessages()
+        }
+    }
+    
     // НОВЫЙ МЕТОД ДЕЛЕГАТА
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         print("MessagesViewController: Ячейка выбрана по индексу \(indexPath.row)")
@@ -745,6 +839,8 @@ final class MessageCell: UITableViewCell {
     private var videoPreviewImageView: UIImageView?
     private var playIcon: UIImageView?
     private var playButton: UIButton?
+    private var incomingConstraints: [NSLayoutConstraint] = []
+    private var outgoingConstraints: [NSLayoutConstraint] = []
     
     weak var viewController: MessagesViewController?
     var indexPath: IndexPath?
@@ -767,9 +863,25 @@ final class MessageCell: UITableViewCell {
         messageBubble.layer.cornerRadius = 12
         contentView.addSubview(messageBubble)
         
+        let topConstraint = messageBubble.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 8)
+        let bottomConstraint = messageBubble.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -8)
+        incomingConstraints = [
+            messageBubble.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
+            messageBubble.trailingAnchor.constraint(lessThanOrEqualTo: contentView.trailingAnchor, constant: -16)
+        ]
+        outgoingConstraints = [
+            messageBubble.leadingAnchor.constraint(greaterThanOrEqualTo: contentView.leadingAnchor, constant: 16),
+            messageBubble.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16)
+        ]
+        NSLayoutConstraint.activate(incomingConstraints + [topConstraint, bottomConstraint])
+        
         messageLabel.textColor = .white
-        messageLabel.font = .systemFont(ofSize: 20)
+        messageLabel.font = .systemFont(ofSize: 24, weight: .medium)
         messageLabel.numberOfLines = 0
+        messageLabel.lineBreakMode = .byWordWrapping
+        messageLabel.backgroundColor = .clear
+        messageLabel.shadowColor = UIColor.black.withAlphaComponent(0.4)
+        messageLabel.shadowOffset = CGSize(width: 0, height: 1)
         
         dateLabel.textColor = .lightGray
         dateLabel.font = .systemFont(ofSize: 14)
@@ -799,11 +911,6 @@ final class MessageCell: UITableViewCell {
         messageBubble.addSubview(stack)
         
         NSLayoutConstraint.activate([
-            messageBubble.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
-            messageBubble.trailingAnchor.constraint(lessThanOrEqualTo: contentView.trailingAnchor, constant: -16),
-            messageBubble.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 8),
-            messageBubble.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -8),
-            
             stack.leadingAnchor.constraint(equalTo: messageBubble.leadingAnchor, constant: 12),
             stack.trailingAnchor.constraint(equalTo: messageBubble.trailingAnchor, constant: -12),
             stack.topAnchor.constraint(equalTo: messageBubble.topAnchor, constant: 8),
@@ -817,6 +924,17 @@ final class MessageCell: UITableViewCell {
             playIcon.widthAnchor.constraint(equalToConstant: 50),
             playIcon.heightAnchor.constraint(equalToConstant: 50)
         ])
+    }
+    
+    private func applyAlignment(isOutgoing: Bool) {
+        if isOutgoing {
+            NSLayoutConstraint.deactivate(incomingConstraints)
+            NSLayoutConstraint.activate(outgoingConstraints)
+        } else {
+            NSLayoutConstraint.deactivate(outgoingConstraints)
+            NSLayoutConstraint.activate(incomingConstraints)
+        }
+        contentView.layoutIfNeeded()
     }
     
     override func didUpdateFocus(in context: UIFocusUpdateContext, with coordinator: UIFocusAnimationCoordinator) {
@@ -871,25 +989,10 @@ final class MessageCell: UITableViewCell {
             self.playIcon?.isHidden = true
         }
         
-        if message.isOutgoing {
-            messageBubble.backgroundColor = UIColor(red: 0, green: 0.5, blue: 1.0, alpha: 1.0)
-            messageBubble.removeConstraints(messageBubble.constraints.filter {
-                $0.firstAttribute == .leading || $0.firstAttribute == .trailing
-            })
-            NSLayoutConstraint.activate([
-                messageBubble.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
-                messageBubble.leadingAnchor.constraint(greaterThanOrEqualTo: contentView.leadingAnchor, constant: 16)
-            ])
-        } else {
-            messageBubble.backgroundColor = UIColor(white: 0.2, alpha: 1.0)
-            messageBubble.removeConstraints(messageBubble.constraints.filter {
-                $0.firstAttribute == .leading || $0.firstAttribute == .trailing
-            })
-            NSLayoutConstraint.activate([
-                messageBubble.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
-                messageBubble.trailingAnchor.constraint(lessThanOrEqualTo: contentView.trailingAnchor, constant: -16)
-            ])
-        }
+        messageBubble.backgroundColor = message.isOutgoing
+            ? UIColor(red: 0, green: 0.5, blue: 1.0, alpha: 1.0)
+            : UIColor(white: 0.2, alpha: 1.0)
+        applyAlignment(isOutgoing: message.isOutgoing)
     }
     
     private func showLoadingIndicator(withText text: String) {
@@ -963,6 +1066,8 @@ final class MessageCell: UITableViewCell {
         for subview in videoContainer.subviews where subview is UILabel {
             subview.removeFromSuperview()
         }
+        messageBubble.backgroundColor = UIColor(white: 0.2, alpha: 1.0)
+        applyAlignment(isOutgoing: false)
     }
     
     func showErrorAlert(message: String) {

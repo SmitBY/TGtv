@@ -5,7 +5,13 @@ import Combine
 final class ChatListViewModel: ObservableObject {
     let client: TDLibClient
     private var cachedChats: [TDLibKit.Chat] = []
+    private var remoteSearchChats: [TG.Chat] = []
+    private var hashtagSearchChats: [TG.Chat] = []
+    private var searchTask: Task<Void, Never>?
+    
     @Published private(set) var chats: [TG.Chat] = []
+    @Published private(set) var filteredChats: [TG.Chat] = []
+    @Published private(set) var searchQuery: String = ""
     @Published private(set) var error: Swift.Error?
     @Published private(set) var isLoading = false
     @Published private(set) var loadingProgress = "Загрузка чатов..."
@@ -18,6 +24,10 @@ final class ChatListViewModel: ObservableObject {
         Task { @MainActor in
             try? await loadChats()
         }
+    }
+    
+    deinit {
+        searchTask?.cancel()
     }
     
     @MainActor
@@ -533,6 +543,148 @@ final class ChatListViewModel: ObservableObject {
         }
     }
     
+    @MainActor
+    func updateSearchQuery(_ text: String) {
+        let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard normalized != searchQuery else { return }
+        searchQuery = normalized
+        
+        if normalized.isEmpty {
+            remoteSearchChats = []
+            hashtagSearchChats = []
+            searchTask?.cancel()
+            searchTask = nil
+            applyChatFilter()
+            return
+        }
+        
+        if normalized.count < 3 {
+            remoteSearchChats = []
+        }
+        
+        applyChatFilter()
+        startSearchTaskIfNeeded(for: normalized)
+    }
+    
+    private func startSearchTaskIfNeeded(for query: String) {
+        let needsChats = query.count >= 3
+        let needsHashtags = query.contains("#")
+        guard needsChats || needsHashtags else { return }
+        
+        searchTask?.cancel()
+        searchTask = Task { [weak self] in
+            await self?.performRemoteSearch(for: query, includeChats: needsChats, includeHashtags: needsHashtags)
+        }
+    }
+    
+    private func performRemoteSearch(for query: String, includeChats: Bool, includeHashtags: Bool) async {
+        let remote = includeChats ? await fetchServerSideChats(query: query) : []
+        let hashtags = includeHashtags ? await fetchHashtagChats(query: query) : []
+        
+        await MainActor.run {
+            guard self.searchQuery == query else { return }
+            if includeChats {
+                self.remoteSearchChats = remote
+            } else {
+                self.remoteSearchChats = []
+            }
+            if includeHashtags {
+                self.hashtagSearchChats = hashtags
+            } else {
+                self.hashtagSearchChats = []
+            }
+            self.applyChatFilter()
+        }
+    }
+    
+    private func fetchServerSideChats(query: String) async -> [TG.Chat] {
+        do {
+            let serverResult = try await client.searchChatsOnServer(limit: 25, query: query)
+            let publicResult = try await client.searchPublicChats(query: query)
+            var combinedIds: [Int64] = []
+            for id in serverResult.chatIds {
+                if !combinedIds.contains(id) {
+                    combinedIds.append(id)
+                }
+            }
+            for id in publicResult.chatIds {
+                if !combinedIds.contains(id) {
+                    combinedIds.append(id)
+                }
+            }
+            
+            let cachedSnapshot = await MainActor.run { self.cachedChats }
+            var chats: [TG.Chat] = []
+            for chatId in combinedIds {
+                if let cached = cachedSnapshot.first(where: { $0.id == chatId }) {
+                    chats.append(makeTGChat(from: cached))
+                    continue
+                }
+                do {
+                    let chat = try await client.getChat(chatId: chatId)
+                    chats.append(makeTGChat(from: chat))
+                } catch {
+                    print("ChatListViewModel: Не удалось получить чат \(chatId): \(error)")
+                }
+            }
+            return chats
+        } catch {
+            print("ChatListViewModel: Ошибка поиска чатов на сервере: \(error)")
+            return []
+        }
+    }
+    
+    private func fetchHashtagChats(query: String) async -> [TG.Chat] {
+        do {
+            let result = try await client.searchMessages(
+                chatList: nil,
+                chatTypeFilter: nil,
+                filter: nil,
+                limit: 30,
+                maxDate: nil,
+                minDate: nil,
+                offset: nil,
+                query: query
+            )
+            let messages = result.messages
+            var seenChats = Set<Int64>()
+            var chats: [TG.Chat] = []
+            for message in messages {
+                if seenChats.contains(message.chatId) { continue }
+                seenChats.insert(message.chatId)
+                
+                do {
+                    let chat = try await client.getChat(chatId: message.chatId)
+                    let snippet = makeSnippet(from: message, query: query)
+                    chats.append(makeTGChat(from: chat, overrideLastMessage: snippet))
+                } catch {
+                    print("ChatListViewModel: Не удалось загрузить чат \(message.chatId) для хэштега: \(error)")
+                }
+            }
+            return chats
+        } catch {
+            print("ChatListViewModel: Ошибка поиска по хэштегам: \(error)")
+            return []
+        }
+    }
+    
+    @MainActor
+    private func applyChatFilter() {
+        guard !searchQuery.isEmpty else {
+            filteredChats = chats
+            return
+        }
+        
+        let query = searchQuery.lowercased()
+        let localMatches = chats.filter { matchesSearch($0, query: query) }
+        var combined: [TG.Chat] = searchQuery.contains("#")
+            ? hashtagSearchChats + localMatches
+            : localMatches
+        combined.append(contentsOf: remoteSearchChats)
+        filteredChats = uniqueChats(combined)
+    }
+    
+    @MainActor
     private func updateChats() {
         print("ChatListViewModel: Обновление списка чатов, количество: \(cachedChats.count)")
         
@@ -542,13 +694,7 @@ final class ChatListViewModel: ObservableObject {
             loadingProgress = ""
         }
         
-        chats = cachedChats.map { chat in
-            TG.Chat(
-                id: chat.id,
-                title: chat.title,
-                lastMessage: getMessageText(from: chat.lastMessage)
-            )
-        }
+        chats = cachedChats.map { makeTGChat(from: $0) }
         
         // Если мы обновили список чатов и он не пустой, но индикатор загрузки все еще активен,
         // сбрасываем флаг загрузки
@@ -556,6 +702,45 @@ final class ChatListViewModel: ObservableObject {
             print("ChatListViewModel: Завершаем загрузку, так как чаты успешно загружены")
             isLoading = false
         }
+        
+        applyChatFilter()
+    }
+    
+    private func makeSnippet(from message: TDLibKit.Message, query: String) -> String {
+        let text = getMessageText(from: message)
+        guard !text.isEmpty else {
+            return "Сообщение содержит \(query)"
+        }
+        return truncate(text, limit: 140)
+    }
+    
+    private func makeTGChat(from chat: TDLibKit.Chat, overrideLastMessage: String? = nil) -> TG.Chat {
+        TG.Chat(
+            id: chat.id,
+            title: chat.title,
+            lastMessage: overrideLastMessage ?? getMessageText(from: chat.lastMessage)
+        )
+    }
+    
+    private func matchesSearch(_ chat: TG.Chat, query: String) -> Bool {
+        chat.title.lowercased().contains(query) || chat.lastMessage.lowercased().contains(query)
+    }
+    
+    private func uniqueChats(_ items: [TG.Chat]) -> [TG.Chat] {
+        var seen = Set<Int64>()
+        var result: [TG.Chat] = []
+        for chat in items {
+            if seen.insert(chat.id).inserted {
+                result.append(chat)
+            }
+        }
+        return result
+    }
+    
+    private func truncate(_ text: String, limit: Int) -> String {
+        guard text.count > limit else { return text }
+        let endIndex = text.index(text.startIndex, offsetBy: limit)
+        return String(text[text.startIndex..<endIndex]) + "…"
     }
     
     private func getMessageText(from message: TDLibKit.Message?) -> String {
@@ -570,5 +755,9 @@ final class ChatListViewModel: ObservableObject {
         default:
             return "[Медиа]"
         }
+    }
+    
+    private func getMessageText(from message: TDLibKit.Message) -> String {
+        getMessageText(from: Optional(message))
     }
 } 

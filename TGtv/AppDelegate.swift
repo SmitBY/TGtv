@@ -971,6 +971,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             }
             
             authService.$isAuthorized
+                .removeDuplicates()
                 .receive(on: DispatchQueue.main)
                 .sink { [navigationController, chatListVC, authVC] isAuthorized in
                     if isAuthorized {
