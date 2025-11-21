@@ -15,6 +15,11 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
     private(set) var isLoading = false
     private var selectedVideoIndexPath: IndexPath?
     private weak var currentlyPlayingVideoCell: MessageCell?
+    private weak var pendingPlayerViewController: AVPlayerViewController?
+    private weak var pendingLoadingOverlay: UIView?
+    private var pendingVideoInfo: TG.MessageMedia.VideoInfo?
+    private let loadingOverlayTag = 0xC0FFEE
+    private var oldestLoadedMessageId: Int64?
     
     let chatId: Int64
     
@@ -273,6 +278,10 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
     
     private func handleNewMessage(_ message: TDLibKit.Message) {
         print("MessagesViewController: Получено новое сообщение: \(message.id)")
+        guard shouldDisplayMessage(message) else {
+            print("MessagesViewController: Сообщение \(message.id) пропущено — нет видео")
+            return
+        }
         let newMessage = TG.Message(
             id: message.id,
             text: getMessageText(from: message),
@@ -291,6 +300,7 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
         messages.append(newMessage)
         loadedMessageIds.insert(newMessage.id)
         let indexPath = IndexPath(row: newIndex, section: 0)
+        ensureVideoMessagesAvailability(triggerAutoLoad: false)
         
         tableView.performBatchUpdates({
             tableView.insertRows(at: [indexPath], with: .automatic)
@@ -341,13 +351,9 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
             if completed {
                  print("MessagesViewController: Удалено \(indexPathsToDelete.count) сообщений. Новое количество: \(self.messages.count)")
                  if self.messages.isEmpty {
-                     self.messageLabel.text = "Сообщений нет"
-                     self.messageLabel.isHidden = false
                      self.loadingIndicator.stopAnimating()
-                 } else {
-                     // Если удалили текущую сфокусированную ячейку, возможно, потребуется перенести фокус
-                     // Пока просто обновляем
                  }
+                 self.ensureVideoMessagesAvailability()
             }
         }
     }
@@ -360,6 +366,7 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
         canLoadMoreHistory = true
         isLoadingOlderMessages = false
         loadedMessageIds.removeAll()
+        oldestLoadedMessageId = nil
         
         loadingIndicator.startAnimating()
         messageLabel.isHidden = false
@@ -419,6 +426,10 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
         print("FirstLoad::ApplyHistory chatId=\(chatId) rawCount=\(rawMessages.count)")
         defer { isLoading = false }
         
+        if let newOldest = rawMessages.last?.id {
+            oldestLoadedMessageId = newOldest
+        }
+        
         guard !rawMessages.isEmpty else {
             print("FirstLoad::EmptyHistory chatId=\(chatId)")
             messages = []
@@ -431,19 +442,22 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
             return
         }
         
-        let normalizedMessages = rawMessages.reversed().map { makeTGMessage(from: $0) }
+        let normalizedMessages = rawMessages
+            .reversed()
+            .filter { shouldDisplayMessage($0) }
+            .map { makeTGMessage(from: $0) }
         messages = normalizedMessages
         loadedMessageIds = Set(normalizedMessages.map(\.id))
         canLoadMoreHistory = rawMessages.count == Int(pageSize)
         print("FirstLoad::Normalized chatId=\(chatId) normalizedCount=\(messages.count)")
         
         loadingIndicator.stopAnimating()
-        messageLabel.isHidden = true
         tableView.reloadData()
         tableView.layoutIfNeeded()
         print("FirstLoad::ReloadComplete chatId=\(chatId) visibleRows=\(tableView.numberOfRows(inSection: 0))")
         scrollToBottom(animated: false)
         focusLatestMessageAfterReload()
+        ensureVideoMessagesAvailability()
     }
 
     private func handleInitialHistoryError(_ description: String) {
@@ -519,7 +533,7 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
     private func loadOlderMessages() {
         guard canLoadMoreHistory,
               !isLoadingOlderMessages,
-              let oldestId = messages.first?.id else { return }
+              let oldestId = oldestLoadedMessageId else { return }
         
         isLoadingOlderMessages = true
         
@@ -551,7 +565,9 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
             }
             
             await MainActor.run { [weak self] in
-                self?.isLoadingOlderMessages = false
+                guard let self else { return }
+                self.isLoadingOlderMessages = false
+                self.ensureVideoMessagesAvailability()
             }
         }
     }
@@ -564,17 +580,26 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
             return
         }
         
-        let normalizedMessages = rawMessages.reversed().map { makeTGMessage(from: $0) }
+        if let newOldest = rawMessages.last?.id {
+            if let currentOldest = oldestLoadedMessageId {
+                oldestLoadedMessageId = min(currentOldest, newOldest)
+            } else {
+                oldestLoadedMessageId = newOldest
+            }
+        }
+        
+        canLoadMoreHistory = rawMessages.count == Int(pageSize)
+        
+        let normalizedMessages = rawMessages
+            .reversed()
+            .filter { shouldDisplayMessage($0) }
+            .map { makeTGMessage(from: $0) }
         let uniqueMessages = normalizedMessages.filter { !loadedMessageIds.contains($0.id) }
         
-        guard !uniqueMessages.isEmpty else {
-            canLoadMoreHistory = false
-            return
-        }
+        guard !uniqueMessages.isEmpty else { return }
         
         messages.insert(contentsOf: uniqueMessages, at: 0)
         uniqueMessages.forEach { loadedMessageIds.insert($0.id) }
-        canLoadMoreHistory = rawMessages.count == Int(pageSize)
         
         tableView.reloadData()
         tableView.layoutIfNeeded()
@@ -602,6 +627,13 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
         )
     }
     
+    private func shouldDisplayMessage(_ message: TDLibKit.Message) -> Bool {
+        if case .messageVideo = message.content {
+            return true
+        }
+        return false
+    }
+    
     @objc private func retryLoadMessages() {
         // Находим и удаляем кнопку повтора
         for subview in view.subviews {
@@ -621,6 +653,21 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
         tableView.layoutIfNeeded()
         let lastIndex = IndexPath(row: messages.count - 1, section: 0)
         tableView.scrollToRow(at: lastIndex, at: .bottom, animated: animated)
+    }
+    
+    private func ensureVideoMessagesAvailability(triggerAutoLoad: Bool = true) {
+        if messages.isEmpty {
+            loadingIndicator.stopAnimating()
+            messageLabel.isHidden = false
+            messageLabel.text = canLoadMoreHistory
+                ? "Ищем видеосообщения..."
+                : "В этом чате нет видеосообщений"
+            if triggerAutoLoad && canLoadMoreHistory && !isLoadingOlderMessages {
+                loadOlderMessages()
+            }
+        } else {
+            messageLabel.isHidden = true
+        }
     }
     
     private func getMessageText(from message: TDLibKit.Message) -> String {
@@ -688,6 +735,10 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
                 UIApplication.shared.isIdleTimerDisabled = false
             }
         }
+        pendingLoadingOverlay?.removeFromSuperview()
+        pendingLoadingOverlay = nil
+        pendingVideoInfo = nil
+        pendingPlayerViewController = nil
         // Старая логика для MessageCell, если она где-то осталась (должна быть удалена)
         for _ in tableView.visibleCells {
             // Удаляем этот блок, так как messageCell не используется и логика устарела
@@ -716,6 +767,19 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
             messages[index] = messages[index].updatingMedia(.video(updatedInfo))
             didUpdate = true
         }
+        
+        if let pendingInfo = pendingVideoInfo, pendingInfo.fileId == file.id {
+            pendingVideoInfo = TG.MessageMedia.VideoInfo(
+                path: local.path,
+                fileId: file.id,
+                expectedSize: expectedSize,
+                downloadedSize: local.downloadedSize,
+                isDownloadingCompleted: local.isDownloadingCompleted,
+                mimeType: pendingInfo.mimeType
+            )
+            tryStartPendingPlaybackIfPossible()
+        }
+        
         return didUpdate
     }
     
@@ -801,26 +865,114 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
 
         print("MessagesViewController: Настраиваем аудио сессию")
         setupGlobalAudioSession()
-
+        
         if videoInfo.path.isEmpty {
-            print("MessagesViewController: Файл еще не готов, запускаем загрузку")
-            requestDownload(for: videoInfo.fileId)
-            showAlert(title: "Видео загружается", message: "Файл ещё не скачан, попробуйте открыть позже.")
+            print("MessagesViewController: Локальный путь ещё не готов, запускаем воспроизведение в ожидании")
+            preparePendingPlayback(for: videoInfo)
             return
         }
         
-        print("MessagesViewController: Проверяем существование файла: \(videoInfo.path)")
-        if !FileManager.default.fileExists(atPath: videoInfo.path) {
-            let created = FileManager.default.createFile(atPath: videoInfo.path, contents: nil)
-            if created {
-                print("MessagesViewController: Создан пустой файл для потокового чтения.")
-            } else {
-                print("MessagesViewController: Не удалось создать файл \(videoInfo.path)")
-            }
+        startPlayback(with: videoInfo)
+    }
+
+    // Этот метод должен быть частью AVPlayerViewControllerDelegate
+    // и не требует override, если класс MessagesViewController напрямую реализует протокол.
+    func playerViewControllerDidEndFullScreenPresentation(_ playerViewController: AVPlayerViewController) {
+        print("MessagesViewController: AVPlayerViewController был закрыт (playerViewControllerDidEndFullScreenPresentation).")
+        UIApplication.shared.isIdleTimerDisabled = false
+        streamingCoordinator?.stop()
+        streamingCoordinator = nil
+        if pendingPlayerViewController === playerViewController {
+            pendingPlayerViewController = nil
+            pendingVideoInfo = nil
+            pendingLoadingOverlay?.removeFromSuperview()
+            pendingLoadingOverlay = nil
+        }
+    }
+    
+    private func preparePendingPlayback(for info: TG.MessageMedia.VideoInfo) {
+        requestDownload(for: info.fileId)
+        
+        if let existing = pendingPlayerViewController {
+            pendingLoadingOverlay?.removeFromSuperview()
+            pendingLoadingOverlay = nil
+            pendingVideoInfo = nil
+            pendingPlayerViewController = nil
+            existing.dismiss(animated: false)
+        }
+        
+        let playerVC = AVPlayerViewController()
+        playerVC.delegate = self
+        playerVC.loadViewIfNeeded()
+        if let overlay = addLoadingOverlay(to: playerVC, text: "Видео загружается...") {
+            pendingLoadingOverlay = overlay
+        }
+        
+        pendingPlayerViewController = playerVC
+        pendingVideoInfo = info
+        
+        present(playerVC, animated: true) {
+            print("MessagesViewController: Плеер показан и ожидает данные для файла \(info.fileId)")
+        }
+    }
+    
+    private func addLoadingOverlay(to playerVC: AVPlayerViewController, text: String) -> UIView? {
+        let container = playerVC.contentOverlayView ?? playerVC.view
+        let stack = UIStackView()
+        stack.axis = .vertical
+        stack.spacing = 12
+        stack.alignment = .center
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        stack.tag = loadingOverlayTag
+        
+        let indicator = UIActivityIndicatorView(style: .large)
+        indicator.startAnimating()
+        
+        let label = UILabel()
+        label.text = text
+        label.textColor = .white
+        label.font = .systemFont(ofSize: 22, weight: .medium)
+        label.numberOfLines = 0
+        label.textAlignment = .center
+        
+        stack.addArrangedSubview(indicator)
+        stack.addArrangedSubview(label)
+        
+        container?.addSubview(stack)
+        if let overlay = container {
+            NSLayoutConstraint.activate([
+                stack.centerXAnchor.constraint(equalTo: overlay.centerXAnchor),
+                stack.centerYAnchor.constraint(equalTo: overlay.centerYAnchor)
+            ])
+        }
+        
+        return stack
+    }
+    
+    private func removeLoadingOverlay(from playerVC: AVPlayerViewController?) {
+        if let overlay = pendingLoadingOverlay {
+            overlay.removeFromSuperview()
+            pendingLoadingOverlay = nil
+            return
+        }
+        
+        let container = playerVC?.contentOverlayView ?? playerVC?.view
+        container?.viewWithTag(loadingOverlayTag)?.removeFromSuperview()
+    }
+    
+    private func startPlayback(with info: TG.MessageMedia.VideoInfo, reuse controller: AVPlayerViewController? = nil) {
+        guard !info.path.isEmpty else {
+            print("MessagesViewController: Нельзя запустить воспроизведение — путь пустой")
+            return
+        }
+        
+        if !FileManager.default.fileExists(atPath: info.path) {
+            let created = FileManager.default.createFile(atPath: info.path, contents: nil)
+            print("MessagesViewController: Файл \(info.path) отсутствовал, создан: \(created)")
         }
         
         streamingCoordinator?.stop()
-        let coordinator = VideoStreamingCoordinator(video: videoInfo, client: client)
+        let coordinator = VideoStreamingCoordinator(video: info, client: client)
         streamingCoordinator = coordinator
         coordinator.startDownloadIfNeeded()
         
@@ -833,24 +985,38 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
         let player = AVPlayer(playerItem: playerItem)
         player.automaticallyWaitsToMinimizeStalling = false
         
-        let playerViewController = AVPlayerViewController()
-        playerViewController.player = player
-        playerViewController.delegate = self
-                                          
-        present(playerViewController, animated: true) {
+        let playerVC = controller ?? AVPlayerViewController()
+        playerVC.loadViewIfNeeded()
+        playerVC.player = player
+        playerVC.delegate = self
+        
+        let startPlaybackBlock = {
+            self.removeLoadingOverlay(from: playerVC)
             player.play()
             UIApplication.shared.isIdleTimerDisabled = true
-            print("MessagesViewController: AVPlayerViewController представлен, видео должно играть (streaming)")
+            print("MessagesViewController: Воспроизведение видео \(info.fileId) запущено")
+        }
+        
+        if controller == nil {
+            self.present(playerVC, animated: true, completion: startPlaybackBlock)
+        } else {
+            startPlaybackBlock()
         }
     }
-
-    // Этот метод должен быть частью AVPlayerViewControllerDelegate
-    // и не требует override, если класс MessagesViewController напрямую реализует протокол.
-    func playerViewControllerDidEndFullScreenPresentation(_ playerViewController: AVPlayerViewController) {
-        print("MessagesViewController: AVPlayerViewController был закрыт (playerViewControllerDidEndFullScreenPresentation).")
-        UIApplication.shared.isIdleTimerDisabled = false
-        streamingCoordinator?.stop()
-        streamingCoordinator = nil
+    
+    private func tryStartPendingPlaybackIfPossible() {
+        guard let info = pendingVideoInfo,
+              !info.path.isEmpty,
+              let controller = pendingPlayerViewController else {
+            return
+        }
+        startPlayback(with: info, reuse: controller)
+        if let overlay = pendingLoadingOverlay {
+            overlay.removeFromSuperview()
+            pendingLoadingOverlay = nil
+        }
+        pendingVideoInfo = nil
+        pendingPlayerViewController = nil
     }
 
     // Вспомогательный метод для показа UIAlertController
