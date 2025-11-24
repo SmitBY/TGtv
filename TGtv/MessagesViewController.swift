@@ -19,12 +19,8 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
     private weak var pendingLoadingOverlay: UIView?
     private var pendingVideoInfo: TG.MessageMedia.VideoInfo?
     private let loadingOverlayTag = 0xC0FFEE
+    private let playerBackgroundTag = 0xBACC0B
     private var oldestLoadedMessageId: Int64?
-    private var activeDownloadFileIds = Set<Int>()
-    private var loggedMissingFilePaths = Set<String>()
-    private var pathResolveTasks = [Int: Task<Void, Never>]()
-    private var consecutiveEmptyHistoryFetches = 0
-    private var downloadTasks = [Int: Task<Void, Never>]()
     
     let chatId: Int64
     
@@ -55,6 +51,16 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
     private var streamingCoordinator: VideoStreamingCoordinator?
     
     private var isVideoActive = false
+    
+    private lazy var playerBackgroundImage: UIImage? = {
+        if let assetImage = UIImage(named: "Back") {
+            return assetImage
+        }
+        if let path = Bundle.main.path(forResource: "back", ofType: "png") {
+            return UIImage(contentsOfFile: path)
+        }
+        return nil
+    }()
     
     weak var viewController: MessagesViewController?
     var indexPath: IndexPath?
@@ -135,8 +141,6 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
             scrollToBottom(animated: false)
             focusLatestMessageAfterReload(delay: 0)
         }
-        
-        prioritizeVisibleVideos()
     }
     
     override var preferredFocusEnvironments: [UIFocusEnvironment] {
@@ -271,7 +275,11 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
             print("MessagesViewController: Обновление файла \(update.file.id)")
             streamingCoordinator?.handleFileUpdate(update.file)
             if applyVideoFileUpdate(update.file) {
-                reloadVisibleRowsIfNeeded(for: update.file)
+                if tableView.indexPathsForVisibleRows != nil {
+                    DispatchQueue.main.async {
+                        self.tableView.reloadData()
+                    }
+                }
             }
         } else if case .updateDeleteMessages(let deleteInfo) = update, deleteInfo.chatId == self.chatId {
             print("MessagesViewController: Получено обновление на удаление сообщений: \(deleteInfo.messageIds) в чате \(deleteInfo.chatId)")
@@ -461,9 +469,6 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
         scrollToBottom(animated: false)
         focusLatestMessageAfterReload()
         ensureVideoMessagesAvailability()
-        DispatchQueue.main.async { [weak self] in
-            self?.prioritizeVisibleVideos()
-        }
     }
 
     private func handleInitialHistoryError(_ description: String) {
@@ -568,9 +573,6 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
                 }
             } catch {
                 print("MessagesViewController: Ошибка догрузки старых сообщений: \(error)")
-                await MainActor.run { [weak self] in
-                    self?.markHistoryExhausted()
-                }
             }
             
             await MainActor.run { [weak self] in
@@ -585,19 +587,13 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
                                 anchorMessageId: Int64?,
                                 selectedMessageId: Int64?) {
         guard !rawMessages.isEmpty else {
-            _ = incrementEmptyFetchCounter(limitReached: true)
-            markHistoryExhausted()
+            canLoadMoreHistory = false
             return
         }
         
         if let newOldest = rawMessages.last?.id {
             if let currentOldest = oldestLoadedMessageId {
-                let updatedOldest = min(currentOldest, newOldest)
-                if updatedOldest == currentOldest {
-                    markHistoryExhausted()
-                    return
-                }
-                oldestLoadedMessageId = updatedOldest
+                oldestLoadedMessageId = min(currentOldest, newOldest)
             } else {
                 oldestLoadedMessageId = newOldest
             }
@@ -611,19 +607,10 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
             .map { makeTGMessage(from: $0) }
         let uniqueMessages = normalizedMessages.filter { !loadedMessageIds.contains($0.id) }
         
-        guard !uniqueMessages.isEmpty else {
-            let noVideosInChunk = normalizedMessages.isEmpty
-            let exhausted = incrementEmptyFetchCounter(limitReached: !canLoadMoreHistory || noVideosInChunk)
-            if exhausted {
-                markHistoryExhausted()
-            }
-            return
-        }
+        guard !uniqueMessages.isEmpty else { return }
         
-        consecutiveEmptyHistoryFetches = 0
         messages.insert(contentsOf: uniqueMessages, at: 0)
         uniqueMessages.forEach { loadedMessageIds.insert($0.id) }
-        messageLabel.isHidden = true
         
         tableView.reloadData()
         tableView.layoutIfNeeded()
@@ -719,12 +706,22 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
             return .photo(path: path)
         case .messageVideo(let messageVideo):
             let file = messageVideo.video.video
-            let path = file.local.path
-            print("MessagesViewController: Путь к видео: \(path), доступно: \(file.local.isDownloadingCompleted), размер: \(file.size)")
+            let local = file.local
+            let path = local.path
+            print("MessagesViewController: Путь к видео: \(path), доступно: \(local.isDownloadingCompleted), размер: \(file.size)")
             
-            let videoInfo = makeVideoInfo(
-                from: file,
-                mimeType: messageVideo.video.mimeType
+            if !local.isDownloadingCompleted {
+                requestDownload(for: file.id)
+            }
+            
+            let expectedSize = max(Int64(file.size), local.downloadedSize)
+            let videoInfo = TG.MessageMedia.VideoInfo(
+                path: path,
+                fileId: file.id,
+                expectedSize: expectedSize,
+                downloadedSize: local.downloadedSize,
+                isDownloadingCompleted: local.isDownloadingCompleted,
+                mimeType: messageVideo.video.mimeType.isEmpty ? "video/mp4" : messageVideo.video.mimeType
             )
             
             return .video(videoInfo)
@@ -737,274 +734,10 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
         }
     }
     
-    private func makeVideoInfo(from file: TDLibKit.File,
-                               mimeType: String) -> TG.MessageMedia.VideoInfo {
-        let local = file.local
-        let resolvedMime = mimeType.isEmpty ? "video/mp4" : mimeType
-        var status = resolveLocalFileStatus(at: local.path)
-        var normalizedPath = local.path
-        
-        if status.exists {
-            let pathWithExtension = normalizeVideoPathIfNeeded(at: local.path, mimeType: resolvedMime)
-            if pathWithExtension != local.path {
-                normalizedPath = pathWithExtension
-                status = resolveLocalFileStatus(at: pathWithExtension)
-            }
-        }
-        
-        let isUsable = status.exists && status.size > 0
-        let remoteSize = Int64(file.size)
-        let downloadedSize = isUsable ? max(local.downloadedSize, status.size) : status.size
-        let expectedSize = max(remoteSize, max(local.downloadedSize, status.size))
-        
-        return TG.MessageMedia.VideoInfo(
-            path: normalizedPath,
-            fileId: file.id,
-            expectedSize: expectedSize,
-            downloadedSize: downloadedSize,
-            isDownloadingCompleted: local.isDownloadingCompleted && isUsable,
-            mimeType: resolvedMime
-        )
-    }
-    
-    private func resolveLocalFileStatus(at path: String) -> (exists: Bool, size: Int64) {
-        guard !path.isEmpty else { return (false, 0) }
-        var isDir: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDir),
-              !isDir.boolValue else {
-            logMissingFileIfNeeded(path: path, reason: "file not found")
-            return (false, 0)
-        }
-        
-        do {
-            let attributes = try FileManager.default.attributesOfItem(atPath: path)
-            if let fileSize = attributes[.size] as? NSNumber {
-                let size = fileSize.int64Value
-                if size == 0 {
-                    logMissingFileIfNeeded(path: path, reason: "size is zero")
-                }
-                return (true, size)
-            }
-        } catch {
-            print("MessagesViewController: Не удалось получить размер файла \(path): \(error)")
-            logMissingFileIfNeeded(path: path, reason: "attributes error \(error.localizedDescription)")
-        }
-        return (true, 0)
-    }
-    
-    private func normalizeVideoPathIfNeeded(at path: String, mimeType: String) -> String {
-        guard !path.isEmpty else { return path }
-        let currentURL = URL(fileURLWithPath: path)
-        let ext = currentURL.pathExtension.lowercased()
-        if !ext.isEmpty {
-            return path
-        }
-        guard let preferredExt = preferredExtension(for: mimeType) else {
-            return path
-        }
-        let newURL = currentURL.appendingPathExtension(preferredExt)
-        if FileManager.default.fileExists(atPath: newURL.path) {
-            return newURL.path
-        }
-        do {
-            try FileManager.default.linkItem(at: currentURL, to: newURL)
-        } catch {
-            do {
-                try FileManager.default.copyItem(at: currentURL, to: newURL)
-            } catch {
-                print("MessagesViewController: Не удалось создать копию файла \(path) -> \(newURL.path): \(error)")
-                return path
-            }
-        }
-        return newURL.path
-    }
-    
-    private func preferredExtension(for mimeType: String) -> String? {
-        let normalized = mimeType.lowercased()
-        switch normalized {
-        case "video/mp4", "video/mpeg", "video/3gpp":
-            return "mp4"
-        case "video/quicktime":
-            return "mov"
-        case "video/x-matroska":
-            return "mkv"
-        default:
-            if let ext = normalized.split(separator: "/").last, !ext.isEmpty {
-                return String(ext)
-            }
-            return nil
-        }
-    }
-    
-    private func logMissingFileIfNeeded(path: String, reason: String) {
-        guard !path.isEmpty else { return }
-        if !loggedMissingFilePaths.contains(path) {
-            loggedMissingFilePaths.insert(path)
-            print("MessagesViewController: Локальный файл недоступен (\(reason)): \(path)")
-        }
-    }
-    
-    private func shouldPrioritizeDownload(for info: TG.MessageMedia.VideoInfo,
-                                          status cachedStatus: (exists: Bool, size: Int64)? = nil) -> Bool {
-        if !info.isDownloadingCompleted {
-            return true
-        }
-        if info.path.isEmpty { return true }
-        let status = cachedStatus ?? resolveLocalFileStatus(at: info.path)
-        if !status.exists { return true }
-        if info.expectedSize > 0 {
-            return status.size < info.expectedSize
-        }
-        return status.size == 0
-    }
-    
-    private func needsForceRedownload(for info: TG.MessageMedia.VideoInfo,
-                                      status cachedStatus: (exists: Bool, size: Int64)? = nil) -> Bool {
-        let status = cachedStatus ?? resolveLocalFileStatus(at: info.path)
-        
-        // Перекачиваем только если TDLib считает файл загруженным,
-        // но локально его нет или размер поврежден
-        if info.isDownloadingCompleted {
-            if info.path.isEmpty { return true }
-            if !status.exists { return true }
-            if status.size == 0 { return true }
-            if info.expectedSize > 0 && status.size < info.expectedSize {
-                return true
-            }
-        } else if status.exists {
-            // Если TDLib считает, что загрузка ещё идёт, но мы нашли нулевой файл,
-            // тоже пробуем перекачать
-            if status.size == 0 {
-                return true
-            }
-        }
-        
-        return false
-    }
-    
-    private func ensurePriorityDownload(for info: TG.MessageMedia.VideoInfo, priority: Int = 32) {
-        let status = resolveLocalFileStatus(at: info.path)
-        guard shouldPrioritizeDownload(for: info, status: status) else { return }
-        
-        let forceRedownload = needsForceRedownload(for: info, status: status)
-        if forceRedownload {
-            print("MessagesViewController: Сбрасываем кеш файла \(info.fileId) перед загрузкой")
-        }
-        
-        print("MessagesViewController: Приоритетная загрузка файла \(info.fileId) с приоритетом \(priority)")
-        requestDownload(
-            for: info.fileId,
-            priority: priority,
-            forceRedownload: forceRedownload,
-            localPath: info.path
-        )
-        if info.path.isEmpty {
-            ensureLocalPathResolution(for: info.fileId)
-        }
-    }
-    
-    private func prioritizeVideoIfNeeded(at indexPath: IndexPath) {
-        guard messages.indices.contains(indexPath.row),
-              let media = messages[indexPath.row].media,
-              case .video(let info) = media else { return }
-        ensurePriorityDownload(for: info)
-        if info.path.isEmpty {
-            ensureLocalPathResolution(for: info.fileId)
-        }
-    }
-    
-    private func prioritizeVisibleVideos() {
-        if !Thread.isMainThread {
-            DispatchQueue.main.async { [weak self] in
-                self?.prioritizeVisibleVideos()
-            }
-            return
-        }
-        
-        guard let visibleRows = tableView.indexPathsForVisibleRows else { return }
-        visibleRows.forEach { prioritizeVideoIfNeeded(at: $0) }
-    }
-    
-    private func ensureLocalPathResolution(for fileId: Int) {
-        if pathResolveTasks[fileId] != nil { return }
-        let task = Task { [weak self] in
-            guard let self else { return }
-            defer {
-                Task { [weak self] in
-                    await MainActor.run {
-                        self?.pathResolveTasks[fileId] = nil
-                    }
-                }
-            }
-            while !Task.isCancelled {
-                do {
-                    let file = try await client.getFile(fileId: fileId)
-                    if !file.local.path.isEmpty {
-                        await MainActor.run {
-                            if self.applyVideoFileUpdate(file) {
-                                self.tableView.reloadData()
-                            }
-                        }
-                        break
-                    }
-                } catch {
-                    print("MessagesViewController: Ошибка getFile для \(fileId): \(error)")
-                }
-                try? await Task.sleep(nanoseconds: 300_000_000)
-            }
-        }
-        pathResolveTasks[fileId] = task
-    }
-
-    @MainActor
-    private func markHistoryExhausted() {
-        if !canLoadMoreHistory && oldestLoadedMessageId == nil {
-            return
-        }
-        canLoadMoreHistory = false
-        isLoadingOlderMessages = false
-        oldestLoadedMessageId = nil
-        consecutiveEmptyHistoryFetches = 0
-        loadingIndicator.stopAnimating()
-        if messages.isEmpty {
-            messageLabel.isHidden = false
-            messageLabel.text = "В этом чате нет видеосообщений"
-        }
-    }
-    
-    private func incrementEmptyFetchCounter(limitReached: Bool) -> Bool {
-        if limitReached {
-            consecutiveEmptyHistoryFetches = Int.max
-            return true
-        }
-        consecutiveEmptyHistoryFetches += 1
-        return consecutiveEmptyHistoryFetches >= 3
-    }
-    @MainActor
-    private func reloadVisibleRowsIfNeeded(for file: TDLibKit.File) {
-        guard file.local.isDownloadingCompleted else { return }
-        guard let visibleRows = tableView.indexPathsForVisibleRows else { return }
-        var indexPathsToReload: [IndexPath] = []
-        for indexPath in visibleRows {
-            guard messages.indices.contains(indexPath.row),
-                  let media = messages[indexPath.row].media,
-                  case .video(let info) = media,
-                  info.fileId == file.id else { continue }
-            indexPathsToReload.append(indexPath)
-        }
-        if !indexPathsToReload.isEmpty {
-            tableView.reloadRows(at: indexPathsToReload, with: .none)
-        }
-    }
-    
-        
     // Метод для очистки всех ресурсов медиа
     private func cleanupAllMediaResources() {
-        cancelAllDownloads()
         streamingCoordinator?.stop()
         streamingCoordinator = nil
-        pathResolveTasks.values.forEach { $0.cancel() }
-        pathResolveTasks.removeAll()
         // Находим и останавливаем все воспроизводимые видео
         // Если используется AVPlayerViewController, он должен быть закрыт
         if let presentedVC = presentedViewController as? AVPlayerViewController {
@@ -1026,28 +759,33 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
         }
     }
     
-    @MainActor
     private func applyVideoFileUpdate(_ file: TDLibKit.File) -> Bool {
         var didUpdate = false
+        let local = file.local
+        let expectedSize = max(Int64(file.size), local.downloadedSize)
         for index in messages.indices {
             guard case .video(let info) = messages[index].media,
                   info.fileId == file.id else { continue }
             
-            let updatedInfo = makeVideoInfo(
-                from: file,
+            let updatedInfo = TG.MessageMedia.VideoInfo(
+                path: local.path,
+                fileId: file.id,
+                expectedSize: expectedSize,
+                downloadedSize: local.downloadedSize,
+                isDownloadingCompleted: local.isDownloadingCompleted,
                 mimeType: info.mimeType
             )
-            print("MessagesViewController: Файл \(file.id) обновлен, путь: \(file.local.path), размер: \(file.local.downloadedSize)")
             messages[index] = messages[index].updatingMedia(.video(updatedInfo))
             didUpdate = true
         }
-        pathResolveTasks[file.id]?.cancel()
-        pathResolveTasks[file.id] = nil
-        loggedMissingFilePaths.remove(file.local.path)
         
         if let pendingInfo = pendingVideoInfo, pendingInfo.fileId == file.id {
-            pendingVideoInfo = makeVideoInfo(
-                from: file,
+            pendingVideoInfo = TG.MessageMedia.VideoInfo(
+                path: local.path,
+                fileId: file.id,
+                expectedSize: expectedSize,
+                downloadedSize: local.downloadedSize,
+                isDownloadingCompleted: local.isDownloadingCompleted,
                 mimeType: pendingInfo.mimeType
             )
             tryStartPendingPlaybackIfPossible()
@@ -1056,84 +794,21 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
         return didUpdate
     }
     
-    private func requestDownload(for fileId: Int,
-                                 priority: Int = 32,
-                                 forceRedownload: Bool = false,
-                                 localPath: String? = nil) {
-        let task = Task { [weak self] in
-            guard let self else { return }
-            let shouldStart = await MainActor.run { self.registerDownload(fileId) }
-            guard shouldStart else {
-                print("MessagesViewController: Загрузка файла \(fileId) уже выполняется")
-                return
-            }
+    private func requestDownload(for fileId: Int) {
+        Task {
             do {
-                if forceRedownload {
-                    await self.forceInvalidateLocalFile(fileId: fileId, path: localPath)
-                }
-                print("MessagesViewController: Запускаем загрузку файла \(fileId) с приоритетом \(priority)")
-                let file = try await client.downloadFile(
+                print("MessagesViewController: Запускаем загрузку файла \(fileId)")
+                _ = try await client.downloadFile(
                     fileId: fileId,
                     limit: 0,
                     offset: 0,
-                    priority: priority,
+                    priority: 32,
                     synchronous: false
                 )
-                let didUpdate = await MainActor.run {
-                    self.applyVideoFileUpdate(file)
-                }
-                if didUpdate {
-                    await MainActor.run {
-                        self.reloadVisibleRowsIfNeeded(for: file)
-                    }
-                }
             } catch {
                 print("MessagesViewController: Ошибка загрузки файла \(fileId): \(error)")
             }
-            _ = await MainActor.run { self.unregisterDownload(fileId) }
-            await MainActor.run { self.downloadTasks[fileId] = nil }
         }
-        downloadTasks[fileId]?.cancel()
-        downloadTasks[fileId] = task
-    }
-    
-    private func forceInvalidateLocalFile(fileId: Int, path: String?) async {
-        if let path, !path.isEmpty {
-            do {
-                try FileManager.default.removeItem(atPath: path)
-                _ = await MainActor.run { loggedMissingFilePaths.remove(path) }
-                print("MessagesViewController: Удалили локальный файл по пути \(path)")
-            } catch {
-                print("MessagesViewController: Не удалось удалить файл \(path): \(error)")
-            }
-        }
-        
-        do {
-            try await client.deleteFile(fileId: fileId)
-            print("MessagesViewController: TDLib уведомлен о удалении файла \(fileId)")
-        } catch {
-            print("MessagesViewController: Ошибка deleteFile для \(fileId): \(error)")
-        }
-    }
-    
-    private func cancelAllDownloads() {
-        downloadTasks.values.forEach { $0.cancel() }
-        downloadTasks.removeAll()
-        activeDownloadFileIds.removeAll()
-    }
-
-    @MainActor
-    private func registerDownload(_ fileId: Int) -> Bool {
-        if activeDownloadFileIds.contains(fileId) {
-            return false
-        }
-        activeDownloadFileIds.insert(fileId)
-        return true
-    }
-    
-    @MainActor
-    private func unregisterDownload(_ fileId: Int) {
-        activeDownloadFileIds.remove(fileId)
     }
     
     // Метод для глобальной настройки аудио сессии
@@ -1227,15 +902,7 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
     }
     
     private func preparePendingPlayback(for info: TG.MessageMedia.VideoInfo) {
-        let status = resolveLocalFileStatus(at: info.path)
-        let forceRedownload = needsForceRedownload(for: info, status: status)
-        requestDownload(for: info.fileId,
-                        priority: 32,
-                        forceRedownload: forceRedownload,
-                        localPath: info.path)
-        if info.path.isEmpty {
-            ensureLocalPathResolution(for: info.fileId)
-        }
+        requestDownload(for: info.fileId)
         
         if let existing = pendingPlayerViewController {
             pendingLoadingOverlay?.removeFromSuperview()
@@ -1248,6 +915,7 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
         let playerVC = AVPlayerViewController()
         playerVC.delegate = self
         playerVC.loadViewIfNeeded()
+        applyPlayerBackground(to: playerVC)
         if let overlay = addLoadingOverlay(to: playerVC, text: "Видео загружается...") {
             pendingLoadingOverlay = overlay
         }
@@ -1261,43 +929,61 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
     }
     
     private func addLoadingOverlay(to playerVC: AVPlayerViewController, text: String) -> UIView? {
-        guard let overlay = playerVC.contentOverlayView ?? playerVC.view else { return nil }
-        overlay.viewWithTag(loadingOverlayTag)?.removeFromSuperview()
+        guard let hostView = playerVC.view else { return nil }
         
-        let container = UIView(frame: overlay.bounds)
-        container.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        container.tag = loadingOverlayTag
+        let overlay = UIView()
+        overlay.translatesAutoresizingMaskIntoConstraints = false
+        overlay.backgroundColor = UIColor.black.withAlphaComponent(0.3)
+        overlay.tag = loadingOverlayTag
+        overlay.isUserInteractionEnabled = false
         
-        let stack = UIStackView()
-        stack.axis = .vertical
-        stack.spacing = 12
-        stack.alignment = .center
-        stack.translatesAutoresizingMaskIntoConstraints = false
+        hostView.addSubview(overlay)
+        hostView.bringSubviewToFront(overlay)
+        
+        NSLayoutConstraint.activate([
+            overlay.topAnchor.constraint(equalTo: hostView.topAnchor),
+            overlay.leadingAnchor.constraint(equalTo: hostView.leadingAnchor),
+            overlay.trailingAnchor.constraint(equalTo: hostView.trailingAnchor),
+            overlay.bottomAnchor.constraint(equalTo: hostView.bottomAnchor)
+        ])
+        
+        let content = UIView()
+        content.translatesAutoresizingMaskIntoConstraints = false
+        content.isUserInteractionEnabled = false
+        overlay.addSubview(content)
+        
+        NSLayoutConstraint.activate([
+            content.centerXAnchor.constraint(equalTo: overlay.centerXAnchor),
+            content.centerYAnchor.constraint(equalTo: overlay.centerYAnchor),
+            content.leadingAnchor.constraint(greaterThanOrEqualTo: overlay.leadingAnchor, constant: 60),
+            overlay.trailingAnchor.constraint(greaterThanOrEqualTo: content.trailingAnchor, constant: 60)
+        ])
         
         let indicator = UIActivityIndicatorView(style: .large)
+        indicator.translatesAutoresizingMaskIntoConstraints = false
         indicator.startAnimating()
         
         let label = UILabel()
+        label.translatesAutoresizingMaskIntoConstraints = false
         label.text = text
         label.textColor = .white
         label.font = .systemFont(ofSize: 22, weight: .medium)
         label.numberOfLines = 0
         label.textAlignment = .center
         
-        stack.addArrangedSubview(indicator)
-        stack.addArrangedSubview(label)
-        
-        container.addSubview(stack)
-        overlay.addSubview(container)
+        content.addSubview(indicator)
+        content.addSubview(label)
         
         NSLayoutConstraint.activate([
-            stack.centerXAnchor.constraint(equalTo: container.centerXAnchor),
-            stack.centerYAnchor.constraint(equalTo: container.centerYAnchor),
-            stack.leadingAnchor.constraint(greaterThanOrEqualTo: container.leadingAnchor, constant: 40),
-            stack.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -40)
+            indicator.centerXAnchor.constraint(equalTo: content.centerXAnchor),
+            indicator.topAnchor.constraint(equalTo: content.topAnchor),
+            label.topAnchor.constraint(equalTo: indicator.bottomAnchor, constant: 12),
+            label.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            label.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            label.bottomAnchor.constraint(equalTo: content.bottomAnchor)
         ])
         
-        return container
+        return overlay
     }
     
     private func removeLoadingOverlay(from playerVC: AVPlayerViewController?) {
@@ -1307,7 +993,7 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
             return
         }
         
-        let container = playerVC?.contentOverlayView ?? playerVC?.view
+        let container = playerVC?.view
         container?.viewWithTag(loadingOverlayTag)?.removeFromSuperview()
     }
     
@@ -1322,35 +1008,39 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
             print("MessagesViewController: Файл \(info.path) отсутствовал, создан: \(created)")
         }
         
+        let fileURL = URL(fileURLWithPath: info.path)
         streamingCoordinator?.stop()
-        let shouldStreamProgressively = !(info.isDownloadingCompleted && fileExistsAndValid(at: info.path))
-        let playerItem: AVPlayerItem
-        if shouldStreamProgressively {
+        
+        let playerItem: AVPlayerItem?
+        if isLocalVideoReady(at: info.path, expectedSize: info.expectedSize, downloadedSize: info.downloadedSize, isCompleted: info.isDownloadingCompleted) {
+            streamingCoordinator = nil
+            let asset = AVURLAsset(url: fileURL, options: assetOptions(for: info.mimeType))
+            playerItem = AVPlayerItem(asset: asset)
+        } else {
             let coordinator = VideoStreamingCoordinator(video: info, client: client)
             streamingCoordinator = coordinator
             coordinator.startDownloadIfNeeded()
-            
-            guard let item = coordinator.makePlayerItem() else {
-                streamingCoordinator = nil
-                showAlert(title: "Ошибка", message: "Не удалось подготовить потоковое воспроизведение.")
-                return
-            }
-            playerItem = item
-        } else {
-            streamingCoordinator = nil
-            playerItem = AVPlayerItem(url: URL(fileURLWithPath: info.path))
+            playerItem = coordinator.makePlayerItem()
         }
         
-        let player = AVPlayer(playerItem: playerItem)
+        guard let preparedItem = playerItem else {
+            streamingCoordinator = nil
+            showAlert(title: "Ошибка", message: "Не удалось подготовить потоковое воспроизведение.")
+            return
+        }
+        
+        let player = AVPlayer(playerItem: preparedItem)
         player.automaticallyWaitsToMinimizeStalling = false
         
         let playerVC = controller ?? AVPlayerViewController()
         playerVC.loadViewIfNeeded()
+        applyPlayerBackground(to: playerVC)
         playerVC.player = player
         playerVC.delegate = self
         
         let startPlaybackBlock = {
             self.removeLoadingOverlay(from: playerVC)
+            self.setPlayerBackgroundHidden(true, for: playerVC)
             player.play()
             UIApplication.shared.isIdleTimerDisabled = true
             print("MessagesViewController: Воспроизведение видео \(info.fileId) запущено")
@@ -1361,18 +1051,6 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
         } else {
             startPlaybackBlock()
         }
-    }
-    
-    private func fileExistsAndValid(at path: String) -> Bool {
-        guard !path.isEmpty else { return false }
-        var isDir: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDir),
-              !isDir.boolValue else { return false }
-        guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
-              let size = attrs[.size] as? NSNumber else {
-            return false
-        }
-        return size.int64Value > 0
     }
     
     private func tryStartPendingPlaybackIfPossible() {
@@ -1388,6 +1066,45 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
         }
         pendingVideoInfo = nil
         pendingPlayerViewController = nil
+    }
+
+    private func applyPlayerBackground(to playerVC: AVPlayerViewController) {
+        guard let image = playerBackgroundImage else {
+            return
+        }
+        
+        setPlayerBackgroundHidden(false, for: playerVC)
+
+        if let existing = playerVC.view.viewWithTag(playerBackgroundTag) as? UIImageView {
+            existing.image = image
+            playerVC.view.sendSubviewToBack(existing)
+            return
+        }
+        
+        let backgroundView = UIImageView(image: image)
+        backgroundView.translatesAutoresizingMaskIntoConstraints = false
+        backgroundView.contentMode = .scaleAspectFill
+        backgroundView.clipsToBounds = true
+        backgroundView.isUserInteractionEnabled = false
+        backgroundView.tag = playerBackgroundTag
+        
+        playerVC.view.addSubview(backgroundView)
+        playerVC.view.sendSubviewToBack(backgroundView)
+        
+        NSLayoutConstraint.activate([
+            backgroundView.topAnchor.constraint(equalTo: playerVC.view.topAnchor),
+            backgroundView.leadingAnchor.constraint(equalTo: playerVC.view.leadingAnchor),
+            backgroundView.trailingAnchor.constraint(equalTo: playerVC.view.trailingAnchor),
+            backgroundView.bottomAnchor.constraint(equalTo: playerVC.view.bottomAnchor)
+        ])
+    }
+    
+    private func setPlayerBackgroundHidden(_ hidden: Bool, for playerVC: AVPlayerViewController) {
+        if let backgroundView = playerVC.view.viewWithTag(playerBackgroundTag) as? UIImageView {
+            backgroundView.isHidden = hidden
+        }
+        playerVC.view.backgroundColor = hidden ? .black : .clear
+        playerVC.contentOverlayView?.backgroundColor = .clear
     }
 
     // Вспомогательный метод для показа UIAlertController
@@ -1419,7 +1136,6 @@ extension MessagesViewController: UITableViewDelegate, UITableViewDataSource {
     }
     
     func tableView(_ tableView: UITableView, willDisplay cell: UITableViewCell, forRowAt indexPath: IndexPath) {
-        prioritizeVideoIfNeeded(at: indexPath)
         if indexPath.row == 0 {
             loadOlderMessages()
         }
@@ -1446,16 +1162,33 @@ extension MessagesViewController: UITableViewDelegate, UITableViewDataSource {
         // Снимаем выделение с ячейки, если не хотим, чтобы она оставалась подсвеченной
         // tableView.deselectRow(at: indexPath, animated: true)
     }
-    
-    func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
-        prioritizeVisibleVideos()
+}
+
+private func isLocalVideoReady(at path: String, expectedSize: Int64, downloadedSize: Int64, isCompleted: Bool) -> Bool {
+    if isCompleted {
+        return true
     }
-    
-    func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
-        if !decelerate {
-            prioritizeVisibleVideos()
-        }
+    guard let attributes = try? FileManager.default.attributesOfItem(atPath: path),
+          let fileSize = attributes[.size] as? UInt64 else {
+        return false
     }
+    if expectedSize > 0 {
+        return UInt64(expectedSize) <= fileSize
+    }
+    if downloadedSize > 0 {
+        return UInt64(downloadedSize) <= fileSize
+    }
+    return fileSize > 0
+}
+
+private func assetOptions(for mimeType: String) -> [String: Any] {
+    var options: [String: Any] = [
+        AVURLAssetPreferPreciseDurationAndTimingKey: true
+    ]
+    if !mimeType.isEmpty {
+        options["AVURLAssetOutOfBandMIMETypeKey"] = mimeType
+    }
+    return options
 }
 
 final class MessageCell: UITableViewCell {
@@ -1610,22 +1343,23 @@ final class MessageCell: UITableViewCell {
                 let path = info.path
                 
                 if !path.isEmpty && FileManager.default.fileExists(atPath: path) {
-                    do {
-                        let attrs = try FileManager.default.attributesOfItem(atPath: path)
-                        if let fileSize = attrs[.size] as? UInt64, fileSize > 0 {
-                            if let url = videoURL {
-                                generateThumbnailAsync(from: AVURLAsset(url: url))
-                            }
-                            playIcon?.isHidden = false
-                        } else if let info = videoInfo, !info.isDownloadingCompleted {
-                            showLoadingIndicator(withText: "Видео загружается...")
-                            playIcon?.isHidden = true
-                        } else {
-                            showLoadingIndicator(withText: "Видео повреждено")
-                            playIcon?.isHidden = true
+                    let ready = isLocalVideoReady(
+                        at: path,
+                        expectedSize: info.expectedSize,
+                        downloadedSize: info.downloadedSize,
+                        isCompleted: info.isDownloadingCompleted
+                    )
+                    
+                    if ready {
+                        if let url = videoURL {
+                            generateThumbnailAsync(for: info, url: url)
                         }
-                    } catch {
-                        showLoadingIndicator(withText: "Ошибка доступа к видео")
+                        playIcon?.isHidden = false
+                    } else if !info.isDownloadingCompleted {
+                        showLoadingIndicator(withText: "Видео загружается...")
+                        playIcon?.isHidden = true
+                    } else {
+                        showLoadingIndicator(withText: "Видео повреждено")
                         playIcon?.isHidden = true
                     }
                 } else {
@@ -1671,7 +1405,8 @@ final class MessageCell: UITableViewCell {
         ])
     }
     
-    private func generateThumbnailAsync(from asset: AVURLAsset) {
+    private func generateThumbnailAsync(for info: TG.MessageMedia.VideoInfo, url: URL) {
+        let asset = AVURLAsset(url: url, options: assetOptions(for: info.mimeType))
         let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true
         generator.maximumSize = CGSize(width: 1280, height: 720)
