@@ -242,11 +242,19 @@ class AuthQRController: UIViewController {
     }
     
     override var preferredFocusEnvironments: [UIFocusEnvironment] {
-        if passwordView.isHidden {
-            return [qrImageView]
-        } else {
-            return [passwordTextField, loginButton]
+        guard isViewLoaded else {
+            return super.preferredFocusEnvironments
         }
+        
+        if passwordView?.isHidden == false {
+            return [passwordTextField, loginButton].compactMap { $0 }
+        }
+        
+        if let qrImageView {
+            return [qrImageView]
+        }
+        
+        return super.preferredFocusEnvironments
     }
     
     override func didUpdateFocus(in context: UIFocusUpdateContext, with coordinator: UIFocusAnimationCoordinator) {
@@ -255,9 +263,9 @@ class AuthQRController: UIViewController {
         if let nextView = context.nextFocusedView {
             coordinator.addCoordinatedAnimations {
                 if nextView === self.loginButton {
-                    self.loginButton.transform = CGAffineTransform(scaleX: 1.1, y: 1.1)
+                    self.loginButton?.transform = CGAffineTransform(scaleX: 1.1, y: 1.1)
                 } else if nextView === self.passwordTextField {
-                    self.passwordTextField.transform = CGAffineTransform(scaleX: 1.1, y: 1.1)
+                    self.passwordTextField?.transform = CGAffineTransform(scaleX: 1.1, y: 1.1)
                 }
             }
         }
@@ -265,9 +273,9 @@ class AuthQRController: UIViewController {
         if let prevView = context.previouslyFocusedView {
             coordinator.addCoordinatedAnimations {
                 if prevView === self.loginButton {
-                    self.loginButton.transform = .identity
+                    self.loginButton?.transform = .identity
                 } else if prevView === self.passwordTextField {
-                    self.passwordTextField.transform = .identity
+                    self.passwordTextField?.transform = .identity
                 }
             }
         }

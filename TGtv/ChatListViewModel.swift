@@ -8,6 +8,8 @@ final class ChatListViewModel: ObservableObject {
     private var remoteSearchChats: [TG.Chat] = []
     private var hashtagSearchChats: [TG.Chat] = []
     private var searchTask: Task<Void, Never>?
+    private let cacheQueue = DispatchQueue(label: "com.tgtv.chatList.cache", qos: .utility)
+    private let cacheFileURL: URL
     
     @Published private(set) var chats: [TG.Chat] = []
     @Published private(set) var filteredChats: [TG.Chat] = []
@@ -20,9 +22,18 @@ final class ChatListViewModel: ObservableObject {
     
     init(client: TDLibClient) {
         self.client = client
-        // Запускаем загрузку чатов при инициализации
-        Task { @MainActor in
-            try? await loadChats()
+        self.cacheFileURL = ChatListViewModel.makeCacheURL()
+        
+        Task { [weak self] in
+            guard let self else { return }
+            let cachedSnapshot = self.restoreChatsFromDisk()
+            if !cachedSnapshot.isEmpty {
+                await MainActor.run {
+                    self.chats = cachedSnapshot
+                    self.filteredChats = cachedSnapshot
+                }
+            }
+            try? await self.loadChats()
         }
     }
     
@@ -59,11 +70,7 @@ final class ChatListViewModel: ObservableObject {
             }
         case .updateNewChat(let update):
             print("ChatListViewModel: Получен новый чат: \(update.chat.title)")
-            if let index = cachedChats.firstIndex(where: { $0.id == update.chat.id }) {
-                cachedChats[index] = update.chat
-            } else {
-                cachedChats.append(update.chat)
-            }
+            upsertChat(update.chat)
             updateChats()
         case .updateChatLastMessage(let update):
             print("ChatListViewModel: Обновлено последнее сообщение для чата \(update.chatId)")
@@ -113,7 +120,7 @@ final class ChatListViewModel: ObservableObject {
                     videoChat: updatedChat.videoChat,
                     viewAsTopics: updatedChat.viewAsTopics
                 )
-                cachedChats[index] = newChat
+                upsertChat(newChat)
                 updateChats()
             }
         case .updateChatPosition(let chatPositionUpdate):
@@ -170,7 +177,7 @@ final class ChatListViewModel: ObservableObject {
                     videoChat: updatedChat.videoChat,
                     viewAsTopics: updatedChat.viewAsTopics
                 )
-                cachedChats[index] = newChat
+                upsertChat(newChat)
                 updateChats()
             }
             // Не перезагружаем чаты после первой загрузки
@@ -226,7 +233,7 @@ final class ChatListViewModel: ObservableObject {
                     videoChat: updatedChat.videoChat,
                     viewAsTopics: updatedChat.viewAsTopics
                 )
-                cachedChats[index] = newChat
+                upsertChat(newChat)
                 updateChats()
             }
         case .updateChatTitle(let update):
@@ -276,7 +283,7 @@ final class ChatListViewModel: ObservableObject {
                     videoChat: updatedChat.videoChat,
                     viewAsTopics: updatedChat.viewAsTopics
                 )
-                cachedChats[index] = newChat
+                upsertChat(newChat)
                 updateChats()
             }
         case .updateChatUnreadMentionCount(let update):
@@ -326,7 +333,7 @@ final class ChatListViewModel: ObservableObject {
                     videoChat: updatedChat.videoChat,
                     viewAsTopics: updatedChat.viewAsTopics
                 )
-                cachedChats[index] = newChat
+                upsertChat(newChat)
                 updateChats()
             }
         case .updateChatUnreadReactionCount(let update):
@@ -376,7 +383,7 @@ final class ChatListViewModel: ObservableObject {
                     videoChat: updatedChat.videoChat,
                     viewAsTopics: updatedChat.viewAsTopics
                 )
-                cachedChats[index] = newChat
+                upsertChat(newChat)
                 updateChats()
             }
         case .updateChatReadInbox(let update):
@@ -426,7 +433,7 @@ final class ChatListViewModel: ObservableObject {
                     videoChat: updatedChat.videoChat,
                     viewAsTopics: updatedChat.viewAsTopics
                 )
-                cachedChats[index] = newChat
+                upsertChat(newChat)
                 updateChats()
             }
         case .updateChatReadOutbox(let update):
@@ -476,7 +483,7 @@ final class ChatListViewModel: ObservableObject {
                     videoChat: updatedChat.videoChat,
                     viewAsTopics: updatedChat.viewAsTopics
                 )
-                cachedChats[index] = newChat
+                upsertChat(newChat)
                 updateChats()
             }
         case .updateChatDraftMessage:
@@ -522,7 +529,7 @@ final class ChatListViewModel: ObservableObject {
             for chatId in chatIds {
                 do {
                     let chat = try await client.getChat(chatId: chatId)
-                    cachedChats.append(chat)
+                    upsertChat(chat)
                     updateChats()
                 } catch {
                     print("ChatListViewModel: Ошибка при загрузке деталей чата \(chatId): \(error)")
@@ -704,6 +711,113 @@ final class ChatListViewModel: ObservableObject {
         }
         
         applyChatFilter()
+        persistChatsSnapshot()
+    }
+    
+    private func chatComesBefore(_ lhs: TDLibKit.Chat, _ rhs: TDLibKit.Chat) -> Bool {
+        let lhsOrder = mainChatListOrder(for: lhs)
+        let rhsOrder = mainChatListOrder(for: rhs)
+        
+        if let lhsOrder, let rhsOrder, lhsOrder != rhsOrder {
+            return lhsOrder > rhsOrder
+        }
+        if lhsOrder != nil && rhsOrder == nil {
+            return true
+        }
+        if lhsOrder == nil && rhsOrder != nil {
+            return false
+        }
+        
+        let lhsDate = Int64(lhs.lastMessage?.date ?? 0)
+        let rhsDate = Int64(rhs.lastMessage?.date ?? 0)
+        if lhsDate != rhsDate {
+            return lhsDate > rhsDate
+        }
+        
+        return lhs.id > rhs.id
+    }
+    
+    @MainActor
+    private func upsertChat(_ chat: TDLibKit.Chat) {
+        if let existingIndex = cachedChats.firstIndex(where: { $0.id == chat.id }) {
+            cachedChats.remove(at: existingIndex)
+        }
+        
+        let insertIndex = cachedChats.firstIndex(where: { chatComesBefore(chat, $0) }) ?? cachedChats.count
+        cachedChats.insert(chat, at: insertIndex)
+    }
+    
+    private func mainChatListOrder(for chat: TDLibKit.Chat) -> Int64? {
+        for position in chat.positions {
+            let list = position.list
+            if case .chatListMain = list {
+                return position.order.rawValue
+            }
+        }
+        return nil
+    }
+    
+    private func persistChatsSnapshot() {
+        let entries = cachedChats.prefix(60).map { chat in
+            ChatCacheEntry(
+                id: chat.id,
+                title: chat.title,
+                lastMessage: getMessageText(from: chat.lastMessage),
+                order: mainChatListOrder(for: chat),
+                lastMessageDate: Int64(chat.lastMessage?.date ?? 0)
+            )
+        }
+        guard !entries.isEmpty else { return }
+        
+        cacheQueue.async { [cacheFileURL] in
+            do {
+                let data = try JSONEncoder().encode(entries)
+                try data.write(to: cacheFileURL, options: .atomic)
+            } catch {
+                print("ChatListViewModel: Не удалось сохранить кэш чатов: \(error)")
+            }
+        }
+    }
+    
+    private func restoreChatsFromDisk() -> [TG.Chat] {
+        do {
+            let data = try Data(contentsOf: cacheFileURL)
+            let entries = try JSONDecoder().decode([ChatCacheEntry].self, from: data)
+            let sortedEntries = entries.sorted(by: cacheEntryComesBefore)
+            return sortedEntries.map { TG.Chat(id: $0.id, title: $0.title, lastMessage: $0.lastMessage) }
+        } catch {
+            return []
+        }
+    }
+    
+    private func cacheEntryComesBefore(_ lhs: ChatCacheEntry, _ rhs: ChatCacheEntry) -> Bool {
+        if let lhsOrder = lhs.order, let rhsOrder = rhs.order, lhsOrder != rhsOrder {
+            return lhsOrder > rhsOrder
+        }
+        if lhs.order != nil && rhs.order == nil {
+            return true
+        }
+        if lhs.order == nil && rhs.order != nil {
+            return false
+        }
+        if lhs.lastMessageDate != rhs.lastMessageDate {
+            return lhs.lastMessageDate > rhs.lastMessageDate
+        }
+        return lhs.id > rhs.id
+    }
+    
+    private static func makeCacheURL() -> URL {
+        let directory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        return directory.appendingPathComponent("chat_list_cache.json")
+    }
+    
+    private struct ChatCacheEntry: Codable {
+        let id: Int64
+        let title: String
+        let lastMessage: String
+        let order: Int64?
+        let lastMessageDate: Int64
     }
     
     private func makeSnippet(from message: TDLibKit.Message, query: String) -> String {

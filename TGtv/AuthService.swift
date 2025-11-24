@@ -119,6 +119,7 @@ class AuthService {
         print("AuthService: Настройка TDLib")
         
         do {
+            _ = try? await client.setLogVerbosityLevel(newVerbosityLevel: 1)
             let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].path
             let databasePath = (documentsPath as NSString).appendingPathComponent("tdlib")
             let filesPath = (documentsPath as NSString).appendingPathComponent("tdlib_files")
