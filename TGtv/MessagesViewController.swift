@@ -194,62 +194,76 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
         // }
     }
     
+    // tvOS safe area (Apple HIG: 60pt top/bottom, 80pt sides)
+    private let tvSafeInsets = UIEdgeInsets(top: 60, left: 80, bottom: 60, right: 80)
+    
     private func setupUI() {
-        view.backgroundColor = .black
+        // Gradient background
+        let gradient = CAGradientLayer()
+        gradient.colors = [
+            UIColor(red: 0.06, green: 0.06, blue: 0.10, alpha: 1).cgColor,
+            UIColor(red: 0.03, green: 0.03, blue: 0.06, alpha: 1).cgColor
+        ]
+        gradient.frame = view.bounds
+        view.layer.insertSublayer(gradient, at: 0)
         
-        // Добавляем кнопку назад
+        // Back button with tvOS style
         let backButton = UIButton(type: .system)
         backButton.translatesAutoresizingMaskIntoConstraints = false
-        backButton.setTitle("Назад", for: .normal)
-        backButton.titleLabel?.font = .systemFont(ofSize: 22, weight: .bold)
-        backButton.setTitleColor(.white, for: .normal)
+        backButton.setTitle("← Назад", for: .normal)
+        backButton.titleLabel?.font = .systemFont(ofSize: 28, weight: .semibold)
+        backButton.setTitleColor(UIColor(white: 0.8, alpha: 1), for: .normal)
+        backButton.setTitleColor(.white, for: .focused)
+        backButton.backgroundColor = UIColor(white: 0.15, alpha: 1)
+        backButton.layer.cornerRadius = 12
         backButton.addTarget(self, action: #selector(backButtonTapped), for: .primaryActionTriggered)
         view.addSubview(backButton)
         
+        tableView.backgroundColor = .clear
+        tableView.separatorStyle = .none
         view.addSubview(tableView)
         
-        // Настраиваем индикатор загрузки
         loadingIndicator.translatesAutoresizingMaskIntoConstraints = false
         loadingIndicator.hidesWhenStopped = true
         loadingIndicator.color = .white
         loadingIndicator.startAnimating()
         view.addSubview(loadingIndicator)
         
-        // Настраиваем текстовое сообщение
         messageLabel.translatesAutoresizingMaskIntoConstraints = false
-        messageLabel.textColor = .white
+        messageLabel.textColor = UIColor(white: 0.7, alpha: 1)
         messageLabel.textAlignment = .center
         messageLabel.numberOfLines = 0
-        messageLabel.font = .systemFont(ofSize: 22)
+        messageLabel.font = .systemFont(ofSize: 28, weight: .medium)
         messageLabel.text = "Загрузка сообщений..."
         view.addSubview(messageLabel)
         
         NSLayoutConstraint.activate([
-            backButton.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -50),
-            backButton.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -40),
-            backButton.widthAnchor.constraint(equalToConstant: 120),
-            backButton.heightAnchor.constraint(equalToConstant: 50),
+            backButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -tvSafeInsets.right),
+            backButton.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -tvSafeInsets.bottom),
+            backButton.widthAnchor.constraint(equalToConstant: 180),
+            backButton.heightAnchor.constraint(equalToConstant: 60),
             
-            tableView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 20),
-            tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            tableView.bottomAnchor.constraint(equalTo: backButton.topAnchor, constant: -20),
+            tableView.topAnchor.constraint(equalTo: view.topAnchor, constant: tvSafeInsets.top),
+            tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: tvSafeInsets.left),
+            tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -tvSafeInsets.right),
+            tableView.bottomAnchor.constraint(equalTo: backButton.topAnchor, constant: -30),
             
             loadingIndicator.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            loadingIndicator.centerYAnchor.constraint(equalTo: view.centerYAnchor, constant: -50),
+            loadingIndicator.centerYAnchor.constraint(equalTo: view.centerYAnchor, constant: -40),
             
             messageLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            messageLabel.topAnchor.constraint(equalTo: loadingIndicator.bottomAnchor, constant: 20),
-            messageLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 40),
-            messageLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -40)
+            messageLabel.topAnchor.constraint(equalTo: loadingIndicator.bottomAnchor, constant: 24),
+            messageLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: tvSafeInsets.left),
+            messageLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -tvSafeInsets.right)
         ])
         
         tableView.register(MessageCell.self, forCellReuseIdentifier: "MessageCell")
         tableView.delegate = self
         tableView.dataSource = self
         tableView.rowHeight = UITableView.automaticDimension
-        tableView.estimatedRowHeight = 100
-        tableView.contentInset = UIEdgeInsets(top: 20, left: 0, bottom: 20, right: 0)
+        tableView.estimatedRowHeight = 140
+        tableView.contentInset = UIEdgeInsets(top: 20, left: 0, bottom: 30, right: 0)
+        tableView.clipsToBounds = false
     }
     
     @objc private func backButtonTapped() {
@@ -1196,6 +1210,7 @@ final class MessageCell: UITableViewCell {
     private let messageLabel = UILabel()
     private let dateLabel = UILabel()
     private let videoContainer = UIView()
+    private var gradientLayer: CAGradientLayer?
     var videoInfo: TG.MessageMedia.VideoInfo?
     private var videoURL: URL? {
         guard let info = videoInfo, !info.path.isEmpty else { return nil }
@@ -1222,42 +1237,53 @@ final class MessageCell: UITableViewCell {
     
     private func setupUI() {
         backgroundColor = .clear
+        contentView.backgroundColor = .clear
         selectionStyle = .none
+        clipsToBounds = false
+        contentView.clipsToBounds = false
         
         messageBubble.translatesAutoresizingMaskIntoConstraints = false
-        messageBubble.backgroundColor = UIColor(white: 0.2, alpha: 1.0)
-        messageBubble.layer.cornerRadius = 12
+        messageBubble.layer.cornerRadius = 20
+        messageBubble.clipsToBounds = true
         contentView.addSubview(messageBubble)
         
-        let topConstraint = messageBubble.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 8)
-        let bottomConstraint = messageBubble.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -8)
+        // Gradient for incoming messages
+        let gradient = CAGradientLayer()
+        gradient.colors = [
+            UIColor(red: 0.16, green: 0.16, blue: 0.20, alpha: 1).cgColor,
+            UIColor(red: 0.12, green: 0.12, blue: 0.16, alpha: 1).cgColor
+        ]
+        gradient.cornerRadius = 20
+        messageBubble.layer.insertSublayer(gradient, at: 0)
+        gradientLayer = gradient
+        
+        let topConstraint = messageBubble.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 12)
+        let bottomConstraint = messageBubble.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -12)
         topConstraint.priority = UILayoutPriority(999)
         bottomConstraint.priority = UILayoutPriority(999)
         incomingConstraints = [
-            messageBubble.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
-            messageBubble.trailingAnchor.constraint(lessThanOrEqualTo: contentView.trailingAnchor, constant: -16)
+            messageBubble.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
+            messageBubble.trailingAnchor.constraint(lessThanOrEqualTo: contentView.trailingAnchor, constant: -100)
         ]
         outgoingConstraints = [
-            messageBubble.leadingAnchor.constraint(greaterThanOrEqualTo: contentView.leadingAnchor, constant: 16),
-            messageBubble.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16)
+            messageBubble.leadingAnchor.constraint(greaterThanOrEqualTo: contentView.leadingAnchor, constant: 100),
+            messageBubble.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20)
         ]
         NSLayoutConstraint.activate(incomingConstraints + [topConstraint, bottomConstraint])
         
         messageLabel.textColor = .white
-        messageLabel.font = .systemFont(ofSize: 24, weight: .medium)
+        messageLabel.font = .systemFont(ofSize: 28, weight: .regular)
         messageLabel.numberOfLines = 0
         messageLabel.lineBreakMode = .byWordWrapping
         messageLabel.backgroundColor = .clear
-        messageLabel.shadowColor = UIColor.black.withAlphaComponent(0.4)
-        messageLabel.shadowOffset = CGSize(width: 0, height: 1)
         
-        dateLabel.textColor = .lightGray
-        dateLabel.font = .systemFont(ofSize: 14)
+        dateLabel.textColor = UIColor(white: 0.5, alpha: 1)
+        dateLabel.font = .systemFont(ofSize: 18, weight: .regular)
         
         videoContainer.translatesAutoresizingMaskIntoConstraints = false
-        videoContainer.backgroundColor = .black
+        videoContainer.backgroundColor = UIColor(white: 0.08, alpha: 1)
         videoContainer.isHidden = true
-        videoContainer.layer.cornerRadius = 8
+        videoContainer.layer.cornerRadius = 16
         videoContainer.clipsToBounds = true
         
         self.playButton = nil
@@ -1267,68 +1293,95 @@ final class MessageCell: UITableViewCell {
         playIcon.image = UIImage(systemName: "play.circle.fill")
         playIcon.tintColor = .white
         playIcon.contentMode = .scaleAspectFit
-        playIcon.alpha = 0.8
+        playIcon.alpha = 0.9
+        
+        // Play icon shadow
+        playIcon.layer.shadowColor = UIColor.black.cgColor
+        playIcon.layer.shadowOpacity = 0.5
+        playIcon.layer.shadowOffset = CGSize(width: 0, height: 2)
+        playIcon.layer.shadowRadius = 4
+        
         videoContainer.addSubview(playIcon)
         self.playIcon = playIcon
         
         let stack = UIStackView(arrangedSubviews: [messageLabel, videoContainer, dateLabel])
         stack.axis = .vertical
-        stack.spacing = 8
+        stack.spacing = 12
         stack.translatesAutoresizingMaskIntoConstraints = false
         
         messageBubble.addSubview(stack)
         
-        let videoHeightConstraint = videoContainer.heightAnchor.constraint(equalTo: videoContainer.widthAnchor, multiplier: 9/20)
+        let videoHeightConstraint = videoContainer.heightAnchor.constraint(equalTo: videoContainer.widthAnchor, multiplier: 9/16)
         videoHeightConstraint.priority = .defaultHigh
         
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: messageBubble.leadingAnchor, constant: 12),
-            stack.trailingAnchor.constraint(equalTo: messageBubble.trailingAnchor, constant: -12),
-            stack.topAnchor.constraint(equalTo: messageBubble.topAnchor, constant: 8),
-            stack.bottomAnchor.constraint(equalTo: messageBubble.bottomAnchor, constant: -8),
+            stack.leadingAnchor.constraint(equalTo: messageBubble.leadingAnchor, constant: 20),
+            stack.trailingAnchor.constraint(equalTo: messageBubble.trailingAnchor, constant: -20),
+            stack.topAnchor.constraint(equalTo: messageBubble.topAnchor, constant: 16),
+            stack.bottomAnchor.constraint(equalTo: messageBubble.bottomAnchor, constant: -16),
             
             videoHeightConstraint,
-            videoContainer.widthAnchor.constraint(lessThanOrEqualToConstant: 300),
+            videoContainer.widthAnchor.constraint(lessThanOrEqualToConstant: 500),
             
             playIcon.centerXAnchor.constraint(equalTo: videoContainer.centerXAnchor),
             playIcon.centerYAnchor.constraint(equalTo: videoContainer.centerYAnchor),
-            playIcon.widthAnchor.constraint(equalToConstant: 50),
-            playIcon.heightAnchor.constraint(equalToConstant: 50)
+            playIcon.widthAnchor.constraint(equalToConstant: 80),
+            playIcon.heightAnchor.constraint(equalToConstant: 80)
         ])
         
         stack.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
         stack.setContentHuggingPriority(.defaultLow, for: .vertical)
     }
     
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        gradientLayer?.frame = messageBubble.bounds
+    }
+    
     private func applyAlignment(isOutgoing: Bool) {
         if isOutgoing {
             NSLayoutConstraint.deactivate(incomingConstraints)
             NSLayoutConstraint.activate(outgoingConstraints)
+            // Blue gradient for outgoing
+            gradientLayer?.colors = [
+                UIColor(red: 0.2, green: 0.5, blue: 0.95, alpha: 1).cgColor,
+                UIColor(red: 0.15, green: 0.4, blue: 0.85, alpha: 1).cgColor
+            ]
         } else {
             NSLayoutConstraint.deactivate(outgoingConstraints)
             NSLayoutConstraint.activate(incomingConstraints)
+            // Dark gradient for incoming
+            gradientLayer?.colors = [
+                UIColor(red: 0.16, green: 0.16, blue: 0.20, alpha: 1).cgColor,
+                UIColor(red: 0.12, green: 0.12, blue: 0.16, alpha: 1).cgColor
+            ]
         }
         contentView.layoutIfNeeded()
     }
     
     override func didUpdateFocus(in context: UIFocusUpdateContext, with coordinator: UIFocusAnimationCoordinator) {
         super.didUpdateFocus(in: context, with: coordinator)
-        if isFocused {
-            messageBubble.transform = CGAffineTransform(scaleX: 1.05, y: 1.05)
-            messageBubble.layer.shadowColor = UIColor.white.cgColor
-            messageBubble.layer.shadowOpacity = 0.5
-            messageBubble.layer.shadowOffset = .zero
-            messageBubble.layer.shadowRadius = 5
-        } else {
-            messageBubble.transform = .identity
-            messageBubble.layer.shadowOpacity = 0
+        
+        coordinator.addCoordinatedAnimations {
+            if self.isFocused {
+                self.messageBubble.transform = CGAffineTransform(scaleX: 1.04, y: 1.04)
+                self.messageBubble.layer.shadowColor = UIColor.white.cgColor
+                self.messageBubble.layer.shadowOpacity = 0.25
+                self.messageBubble.layer.shadowOffset = CGSize(width: 0, height: 10)
+                self.messageBubble.layer.shadowRadius = 15
+            } else {
+                self.messageBubble.transform = .identity
+                self.messageBubble.layer.shadowOpacity = 0
+            }
         }
     }
     
     func configure(with message: TG.Message, viewController: MessagesViewController, indexPath: IndexPath) {
         self.viewController = viewController
         self.indexPath = indexPath
-        messageLabel.text = message.text
+        messageLabel.text = message.text.isEmpty ? nil : message.text
+        messageLabel.isHidden = message.text.isEmpty
+        
         let formatter = DateFormatter()
         formatter.dateStyle = .short
         formatter.timeStyle = .short
@@ -1356,14 +1409,14 @@ final class MessageCell: UITableViewCell {
                         }
                         playIcon?.isHidden = false
                     } else if !info.isDownloadingCompleted {
-                        showLoadingIndicator(withText: "Видео загружается...")
+                        showLoadingIndicator(withText: "Загрузка...")
                         playIcon?.isHidden = true
                     } else {
-                        showLoadingIndicator(withText: "Видео повреждено")
+                        showLoadingIndicator(withText: "Повреждено")
                         playIcon?.isHidden = true
                     }
                 } else {
-                    showLoadingIndicator(withText: "Видео загружается...")
+                    showLoadingIndicator(withText: "Загрузка...")
                     playIcon?.isHidden = true
                 }
             } else {
@@ -1382,9 +1435,6 @@ final class MessageCell: UITableViewCell {
             playIcon?.isHidden = true
         }
         
-        messageBubble.backgroundColor = message.isOutgoing
-            ? UIColor(red: 0, green: 0.5, blue: 1.0, alpha: 1.0)
-            : UIColor(white: 0.2, alpha: 1.0)
         applyAlignment(isOutgoing: message.isOutgoing)
     }
     
@@ -1451,12 +1501,15 @@ final class MessageCell: UITableViewCell {
     override func prepareForReuse() {
         super.prepareForReuse()
         messageLabel.text = nil
+        messageLabel.isHidden = false
         dateLabel.text = nil
         videoInfo = nil
         isUnsupportedVideo = false
         videoPreviewImageView?.removeFromSuperview()
         videoPreviewImageView = nil
         playIcon?.isHidden = true
+        messageBubble.transform = .identity
+        messageBubble.layer.shadowOpacity = 0
         videoContainer.isHidden = true
         for subview in videoContainer.subviews where subview is UILabel {
             subview.removeFromSuperview()
