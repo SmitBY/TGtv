@@ -10,6 +10,7 @@ final class ChatListViewModel: ObservableObject {
     private var searchTask: Task<Void, Never>?
     private let cacheQueue = DispatchQueue(label: "com.tgtv.chatList.cache", qos: .utility)
     private let cacheFileURL: URL
+    private var isChatsUpdateScheduled = false
     
     @Published private(set) var chats: [TG.Chat] = []
     @Published private(set) var filteredChats: [TG.Chat] = []
@@ -71,7 +72,7 @@ final class ChatListViewModel: ObservableObject {
         case .updateNewChat(let update):
             print("ChatListViewModel: Получен новый чат: \(update.chat.title)")
             upsertChat(update.chat)
-            updateChats()
+            scheduleChatsUpdate()
         case .updateChatLastMessage(let update):
             print("ChatListViewModel: Обновлено последнее сообщение для чата \(update.chatId)")
             if let index = cachedChats.firstIndex(where: { $0.id == update.chatId }) {
@@ -121,7 +122,7 @@ final class ChatListViewModel: ObservableObject {
                     viewAsTopics: updatedChat.viewAsTopics
                 )
                 upsertChat(newChat)
-                updateChats()
+                scheduleChatsUpdate()
             }
         case .updateChatPosition(let chatPositionUpdate):
             print("ChatListViewModel: Получено обновление позиции чата для \(chatPositionUpdate.chatId). Не перезагружаем список чатов.")
@@ -178,7 +179,7 @@ final class ChatListViewModel: ObservableObject {
                     viewAsTopics: updatedChat.viewAsTopics
                 )
                 upsertChat(newChat)
-                updateChats()
+                scheduleChatsUpdate()
             }
             // Не перезагружаем чаты после первой загрузки
             /* 
@@ -234,7 +235,7 @@ final class ChatListViewModel: ObservableObject {
                     viewAsTopics: updatedChat.viewAsTopics
                 )
                 upsertChat(newChat)
-                updateChats()
+                scheduleChatsUpdate()
             }
         case .updateChatTitle(let update):
             print("ChatListViewModel: Обновлено название чата \(update.chatId)")
@@ -284,7 +285,7 @@ final class ChatListViewModel: ObservableObject {
                     viewAsTopics: updatedChat.viewAsTopics
                 )
                 upsertChat(newChat)
-                updateChats()
+                scheduleChatsUpdate()
             }
         case .updateChatUnreadMentionCount(let update):
             print("ChatListViewModel: Обновлено количество непрочитанных упоминаний для чата \(update.chatId)")
@@ -334,7 +335,7 @@ final class ChatListViewModel: ObservableObject {
                     viewAsTopics: updatedChat.viewAsTopics
                 )
                 upsertChat(newChat)
-                updateChats()
+                scheduleChatsUpdate()
             }
         case .updateChatUnreadReactionCount(let update):
             print("ChatListViewModel: Обновлено количество непрочитанных реакций для чата \(update.chatId)")
@@ -384,7 +385,7 @@ final class ChatListViewModel: ObservableObject {
                     viewAsTopics: updatedChat.viewAsTopics
                 )
                 upsertChat(newChat)
-                updateChats()
+                scheduleChatsUpdate()
             }
         case .updateChatReadInbox(let update):
             print("ChatListViewModel: Обновлено состояние прочтения входящих для чата \(update.chatId)")
@@ -434,7 +435,7 @@ final class ChatListViewModel: ObservableObject {
                     viewAsTopics: updatedChat.viewAsTopics
                 )
                 upsertChat(newChat)
-                updateChats()
+                scheduleChatsUpdate()
             }
         case .updateChatReadOutbox(let update):
             print("ChatListViewModel: Обновлено состояние прочтения исходящих для чата \(update.chatId)")
@@ -530,11 +531,11 @@ final class ChatListViewModel: ObservableObject {
                 do {
                     let chat = try await client.getChat(chatId: chatId)
                     upsertChat(chat)
-                    updateChats()
                 } catch {
                     print("ChatListViewModel: Ошибка при загрузке деталей чата \(chatId): \(error)")
                 }
             }
+            updateChats()
             
             // Устанавливаем флаг, что чаты уже загружены
             hasLoadedChatsOnce = true
@@ -646,7 +647,7 @@ final class ChatListViewModel: ObservableObject {
             let result = try await client.searchMessages(
                 chatList: nil,
                 chatTypeFilter: nil,
-                filter: nil,
+                filter: .searchMessagesFilterVideo,
                 limit: 30,
                 maxDate: nil,
                 minDate: nil,
@@ -657,13 +658,13 @@ final class ChatListViewModel: ObservableObject {
             var seenChats = Set<Int64>()
             var chats: [TG.Chat] = []
             for message in messages {
+                guard case .messageVideo = message.content else { continue }
                 if seenChats.contains(message.chatId) { continue }
                 seenChats.insert(message.chatId)
                 
                 do {
                     let chat = try await client.getChat(chatId: message.chatId)
-                    let snippet = makeSnippet(from: message, query: query)
-                    chats.append(makeTGChat(from: chat, overrideLastMessage: snippet))
+                    chats.append(makeTGChat(from: chat))
                 } catch {
                     print("ChatListViewModel: Не удалось загрузить чат \(message.chatId) для хэштега: \(error)")
                 }
@@ -714,6 +715,17 @@ final class ChatListViewModel: ObservableObject {
         persistChatsSnapshot()
     }
     
+    @MainActor
+    private func scheduleChatsUpdate() {
+        guard !isChatsUpdateScheduled else { return }
+        isChatsUpdateScheduled = true
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.isChatsUpdateScheduled = false
+            self.updateChats()
+        }
+    }
+    
     private func chatComesBefore(_ lhs: TDLibKit.Chat, _ rhs: TDLibKit.Chat) -> Bool {
         let lhsOrder = mainChatListOrder(for: lhs)
         let rhsOrder = mainChatListOrder(for: rhs)
@@ -762,7 +774,7 @@ final class ChatListViewModel: ObservableObject {
             ChatCacheEntry(
                 id: chat.id,
                 title: chat.title,
-                lastMessage: getMessageText(from: chat.lastMessage),
+                lastMessage: "",
                 order: mainChatListOrder(for: chat),
                 lastMessageDate: Int64(chat.lastMessage?.date ?? 0)
             )
@@ -820,24 +832,16 @@ final class ChatListViewModel: ObservableObject {
         let lastMessageDate: Int64
     }
     
-    private func makeSnippet(from message: TDLibKit.Message, query: String) -> String {
-        let text = getMessageText(from: message)
-        guard !text.isEmpty else {
-            return "Сообщение содержит \(query)"
-        }
-        return truncate(text, limit: 140)
-    }
-    
     private func makeTGChat(from chat: TDLibKit.Chat, overrideLastMessage: String? = nil) -> TG.Chat {
         TG.Chat(
             id: chat.id,
             title: chat.title,
-            lastMessage: overrideLastMessage ?? getMessageText(from: chat.lastMessage)
+            lastMessage: overrideLastMessage ?? ""
         )
     }
     
     private func matchesSearch(_ chat: TG.Chat, query: String) -> Bool {
-        chat.title.lowercased().contains(query) || chat.lastMessage.lowercased().contains(query)
+        chat.title.lowercased().contains(query)
     }
     
     private func uniqueChats(_ items: [TG.Chat]) -> [TG.Chat] {
@@ -851,27 +855,4 @@ final class ChatListViewModel: ObservableObject {
         return result
     }
     
-    private func truncate(_ text: String, limit: Int) -> String {
-        guard text.count > limit else { return text }
-        let endIndex = text.index(text.startIndex, offsetBy: limit)
-        return String(text[text.startIndex..<endIndex]) + "…"
-    }
-    
-    private func getMessageText(from message: TDLibKit.Message?) -> String {
-        guard let message = message else { return "" }
-        switch message.content {
-        case .messageText(let text):
-            return text.text.text
-        case .messagePhoto(let photo):
-            return photo.caption.text.isEmpty ? "[Фото]" : photo.caption.text
-        case .messageVideo(let video):
-            return video.caption.text.isEmpty ? "[Видео]" : video.caption.text
-        default:
-            return "[Медиа]"
-        }
-    }
-    
-    private func getMessageText(from message: TDLibKit.Message) -> String {
-        getMessageText(from: Optional(message))
-    }
 } 

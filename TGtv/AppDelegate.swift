@@ -1014,36 +1014,14 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             if let update = Update.fromRawJSON(data) {
                 print("AppDelegate: Получено обновление через ручной парсинг: \(update)")
                 
-                Task { @MainActor in
-                    guard let self = self else { return }
-                    self.authService?.handleUpdate(update)
-                    
-                    // Проверяем, находимся ли мы на экране сообщений
-                    // Если да, то ограничиваем обработку обновлений чатов, чтобы избежать выкидывания
-                    if let messagesVC = self.messagesViewController, 
-                       messagesVC.isViewLoaded && messagesVC.view.window != nil {
-                        // Обрабатываем только критические обновления в ChatListViewModel
-                        // Для большинства обновлений мы пропускаем их, пока пользователь просматривает сообщения
-                        if case let TDLibKit.Update.updateAuthorizationState(stateUpdate) = update,
-                           case .authorizationStateLoggingOut = stateUpdate.authorizationState {
-                            // Важные обновления, которые нужно обработать независимо от текущего экрана
-                            self.chatListViewModel?.handleUpdate(update)
-                        }
-                        
-                        // Обновления для текущего экрана сообщений
-                        messagesVC.handleUpdate(update)
-                    } else {
-                        // Когда мы не на экране сообщений, обрабатываем все обновления
-                        self.chatListViewModel?.handleUpdate(update)
-                        self.messagesViewController?.handleUpdate(update)
-                    }
-                }
+                self?.process(update: update)
                 return
             }
             
             // Если ручной парсинг не сработал, пробуем автоматический декодер
             do {
                 let decoder = JSONDecoder()
+                decoder.keyDecodingStrategy = .convertFromSnakeCase
                 let update = try decoder.decode(TDLibKit.Update.self, from: data)
                 
                 // Для отладки выводим только важные обновления
@@ -1051,33 +1029,15 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
                     print("AppDelegate: Получено обновление через Codable: \(update)")
                 }
                 
-                Task { @MainActor in
-                    guard let self = self else { return }
-                    self.authService?.handleUpdate(update)
-                    
-                    // Проверяем, находимся ли мы на экране сообщений
-                    // Если да, то ограничиваем обработку обновлений чатов, чтобы избежать выкидывания
-                    if let messagesVC = self.messagesViewController, 
-                       messagesVC.isViewLoaded && messagesVC.view.window != nil {
-                        // Обрабатываем только критические обновления в ChatListViewModel
-                        // Для большинства обновлений мы пропускаем их, пока пользователь просматривает сообщения
-                        if case let TDLibKit.Update.updateAuthorizationState(stateUpdate) = update,
-                           case .authorizationStateLoggingOut = stateUpdate.authorizationState {
-                            // Важные обновления, которые нужно обработать независимо от текущего экрана
-                            self.chatListViewModel?.handleUpdate(update)
-                        }
-                        
-                        // Обновления для текущего экрана сообщений
-                        messagesVC.handleUpdate(update)
-                    } else {
-                        // Когда мы не на экране сообщений, обрабатываем все обновления
-                        self.chatListViewModel?.handleUpdate(update)
-                        self.messagesViewController?.handleUpdate(update)
-                    }
-                }
+                self?.process(update: update)
             } catch {
                 // Проверяем тип ошибки и контент JSON для принятия решения
                 let errorDescription = "\(error)"
+                
+                if let fallbackUpdate = self?.makeFallbackUpdate(from: data) {
+                    self?.process(update: fallbackUpdate)
+                    return
+                }
                 
                 // Пропускаем известные безопасные ошибки
                 let safeToPropagateError = (
@@ -1099,6 +1059,53 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
                 }
             }
         })
+    }
+    
+    private func process(update: TDLibKit.Update) {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.authService?.handleUpdate(update)
+            
+            if let messagesVC = self.messagesViewController,
+               messagesVC.isViewLoaded && messagesVC.view.window != nil {
+                if case let TDLibKit.Update.updateAuthorizationState(stateUpdate) = update,
+                   case .authorizationStateLoggingOut = stateUpdate.authorizationState {
+                    self.chatListViewModel?.handleUpdate(update)
+                }
+                messagesVC.handleUpdate(update)
+            } else {
+                self.chatListViewModel?.handleUpdate(update)
+                self.messagesViewController?.handleUpdate(update)
+            }
+        }
+    }
+    
+    private func makeFallbackUpdate(from data: Data) -> TDLibKit.Update? {
+        guard
+            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let type = json["@type"] as? String
+        else {
+            return nil
+        }
+        
+        switch type {
+        case "updateFile":
+            guard
+                let fileObject = json["file"] as? [String: Any],
+                JSONSerialization.isValidJSONObject(fileObject),
+                let fileData = try? JSONSerialization.data(withJSONObject: fileObject)
+            else {
+                return nil
+            }
+            let decoder = JSONDecoder()
+            decoder.keyDecodingStrategy = .convertFromSnakeCase
+            guard let file = try? decoder.decode(TDLibKit.File.self, from: fileData) else {
+                return nil
+            }
+            return .updateFile(.init(file: file))
+        default:
+            return nil
+        }
     }
 
     // Упрощенный метод установки MessagesViewController

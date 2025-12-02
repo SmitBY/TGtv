@@ -381,6 +381,7 @@ final class ChatCell: UICollectionViewCell {
         messageLabel.font = .systemFont(ofSize: 22, weight: .regular)
         messageLabel.numberOfLines = 2
         messageLabel.lineBreakMode = .byTruncatingTail
+        messageLabel.isHidden = true
         
         let textStack = UIStackView(arrangedSubviews: [titleLabel, messageLabel])
         textStack.axis = .vertical
@@ -416,7 +417,8 @@ final class ChatCell: UICollectionViewCell {
     
     func configure(with chat: TG.Chat) {
         titleLabel.text = chat.title
-        messageLabel.text = chat.lastMessage.isEmpty ? "Нет сообщений" : chat.lastMessage
+        messageLabel.isHidden = true
+        messageLabel.text = nil
         
         // Avatar initials
         let initials = chat.title.prefix(2).uppercased()

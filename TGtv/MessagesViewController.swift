@@ -20,7 +20,7 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
     private var pendingVideoInfo: TG.MessageMedia.VideoInfo?
     private let loadingOverlayTag = 0xC0FFEE
     private let playerBackgroundTag = 0xBACC0B
-    private var oldestLoadedMessageId: Int64?
+    private var nextVideoSearchFromMessageId: Int64 = 0
     
     let chatId: Int64
     
@@ -51,6 +51,8 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
     private var streamingCoordinator: VideoStreamingCoordinator?
     
     private var isVideoActive = false
+    private var fixedRowHeight: CGFloat = 0
+    private var isApplyingInitialHistory = false
     
     private lazy var playerBackgroundImage: UIImage? = {
         if let assetImage = UIImage(named: "Back") {
@@ -143,11 +145,22 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
         }
     }
     
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        updateFixedRowHeightIfNeeded()
+    }
+    
     override var preferredFocusEnvironments: [UIFocusEnvironment] {
-        if !messages.isEmpty {
-            if let lastCell = tableView.cellForRow(at: IndexPath(row: messages.count - 1, section: 0)) {
-                return [lastCell]
-            }
+        guard view.window != nil,
+              tableView.window != nil,
+              !messages.isEmpty else {
+            return [tableView]
+        }
+        let lastIndexPath = IndexPath(row: messages.count - 1, section: 0)
+        if let lastCell = tableView.cellForRow(at: lastIndexPath),
+           lastCell.window != nil,
+           lastCell.superview != nil {
+            return [lastCell]
         }
         return [tableView]
     }
@@ -207,20 +220,15 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
         gradient.frame = view.bounds
         view.layer.insertSublayer(gradient, at: 0)
         
-        // Back button with tvOS style
-        let backButton = UIButton(type: .system)
+        // Back button with custom focus handling
+        let backButton = TVBackButton()
         backButton.translatesAutoresizingMaskIntoConstraints = false
-        backButton.setTitle("← Назад", for: .normal)
-        backButton.titleLabel?.font = .systemFont(ofSize: 28, weight: .semibold)
-        backButton.setTitleColor(UIColor(white: 0.8, alpha: 1), for: .normal)
-        backButton.setTitleColor(.white, for: .focused)
-        backButton.backgroundColor = UIColor(white: 0.15, alpha: 1)
-        backButton.layer.cornerRadius = 12
         backButton.addTarget(self, action: #selector(backButtonTapped), for: .primaryActionTriggered)
         view.addSubview(backButton)
         
         tableView.backgroundColor = .clear
-        tableView.separatorStyle = .none
+        tableView.allowsSelection = true
+        tableView.tableFooterView = UIView(frame: .zero)
         view.addSubview(tableView)
         
         loadingIndicator.translatesAutoresizingMaskIntoConstraints = false
@@ -234,7 +242,7 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
         messageLabel.textAlignment = .center
         messageLabel.numberOfLines = 0
         messageLabel.font = .systemFont(ofSize: 28, weight: .medium)
-        messageLabel.text = "Загрузка сообщений..."
+        messageLabel.text = "Загрузка видеосообщений..."
         view.addSubview(messageLabel)
         
         NSLayoutConstraint.activate([
@@ -260,9 +268,10 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
         tableView.register(MessageCell.self, forCellReuseIdentifier: "MessageCell")
         tableView.delegate = self
         tableView.dataSource = self
-        tableView.rowHeight = UITableView.automaticDimension
-        tableView.estimatedRowHeight = 140
-        tableView.contentInset = UIEdgeInsets(top: 20, left: 0, bottom: 30, right: 0)
+        let initialRowHeight = max(1, floor(UIScreen.main.bounds.height / 3))
+        tableView.rowHeight = initialRowHeight
+        tableView.estimatedRowHeight = initialRowHeight
+        tableView.contentInset = .zero
         tableView.clipsToBounds = false
     }
     
@@ -288,10 +297,13 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
             // Обрабатываем обновление файлов, но не выходим из чата при ошибках
             print("MessagesViewController: Обновление файла \(update.file.id)")
             streamingCoordinator?.handleFileUpdate(update.file)
-            if applyVideoFileUpdate(update.file) {
-                if tableView.indexPathsForVisibleRows != nil {
+            let updatedIndexPaths = applyVideoFileUpdate(update.file)
+            if !updatedIndexPaths.isEmpty {
+                let visible = tableView.indexPathsForVisibleRows ?? []
+                let rowsToReload = updatedIndexPaths.filter { visible.contains($0) }
+                if !rowsToReload.isEmpty {
                     DispatchQueue.main.async {
-                        self.tableView.reloadData()
+                        self.tableView.reloadRows(at: rowsToReload, with: .none)
                     }
                 }
             }
@@ -388,14 +400,15 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
         print("FirstLoad::Start chatId=\(chatId)")
         
         isLoading = true
+        isApplyingInitialHistory = true
         canLoadMoreHistory = true
         isLoadingOlderMessages = false
         loadedMessageIds.removeAll()
-        oldestLoadedMessageId = nil
+        nextVideoSearchFromMessageId = 0
         
         loadingIndicator.startAnimating()
         messageLabel.isHidden = false
-        messageLabel.text = "Загрузка сообщений..."
+        messageLabel.text = "Загрузка видеосообщений..."
         
         if let appDelegate = UIApplication.shared.delegate as? AppDelegate {
             appDelegate.setMessagesViewController(self)
@@ -405,33 +418,12 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
         _ = Task { [weak self] in
             guard let self else { return }
             do {
-                print("MessagesViewController: Загрузка истории чата \(self.chatId)")
-                let primaryHistory = try await self.client.getChatHistory(
-                    chatId: self.chatId,
-                    fromMessageId: 0,
-                    limit: self.pageSize,
-                    offset: -self.pageSize,
-                    onlyLocal: false
-                )
-                
-                var historyMessages = primaryHistory.messages ?? []
-                print("FirstLoad::HistoryReceived chatId=\(self.chatId) count=\(historyMessages.count) offset=-\(self.pageSize)")
-                
-                if historyMessages.isEmpty {
-                    print("FirstLoad::HistoryEmptyWithNegativeOffset chatId=\(self.chatId) — пробуем offset=0")
-                    let fallbackHistory = try await self.client.getChatHistory(
-                        chatId: self.chatId,
-                        fromMessageId: 0,
-                        limit: self.pageSize,
-                        offset: 0,
-                        onlyLocal: false
-                    )
-                    historyMessages = fallbackHistory.messages ?? []
-                    print("FirstLoad::HistoryReceivedFallback chatId=\(self.chatId) count=\(historyMessages.count)")
-                }
+                print("MessagesViewController: Загрузка видеосообщений чата \(self.chatId)")
+                let foundMessages = try await self.fetchVideoMessages(from: 0)
                 
                 await MainActor.run { [weak self] in
-                    self?.applyInitialHistory(historyMessages)
+                    self?.applyInitialHistory(foundMessages.messages,
+                                              nextFromMessageId: foundMessages.nextFromMessageId)
                 }
             } catch {
                 let errorDescription = String(describing: error)
@@ -447,23 +439,26 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
         }
     }
 
-    private func applyInitialHistory(_ rawMessages: [TDLibKit.Message]) {
+    private func applyInitialHistory(_ rawMessages: [TDLibKit.Message],
+                                     nextFromMessageId: Int64) {
         print("FirstLoad::ApplyHistory chatId=\(chatId) rawCount=\(rawMessages.count)")
         defer { isLoading = false }
         
-        if let newOldest = rawMessages.last?.id {
-            oldestLoadedMessageId = newOldest
-        }
+        nextVideoSearchFromMessageId = nextFromMessageId
         
         guard !rawMessages.isEmpty else {
             print("FirstLoad::EmptyHistory chatId=\(chatId)")
             messages = []
             loadedMessageIds.removeAll()
-            canLoadMoreHistory = false
+            canLoadMoreHistory = nextFromMessageId != 0
             loadingIndicator.stopAnimating()
             messageLabel.isHidden = false
-            messageLabel.text = "Нет сообщений в этом чате"
+            messageLabel.text = nextFromMessageId != 0
+                ? "Ищем видеосообщения..."
+                : "В этом чате нет видеосообщений"
             tableView.reloadData()
+            ensureVideoMessagesAvailability()
+            scheduleInitialHistoryCompletion()
             return
         }
         
@@ -473,7 +468,7 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
             .map { makeTGMessage(from: $0) }
         messages = normalizedMessages
         loadedMessageIds = Set(normalizedMessages.map(\.id))
-        canLoadMoreHistory = rawMessages.count == Int(pageSize)
+        canLoadMoreHistory = nextFromMessageId != 0
         print("FirstLoad::Normalized chatId=\(chatId) normalizedCount=\(messages.count)")
         
         loadingIndicator.stopAnimating()
@@ -483,14 +478,22 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
         scrollToBottom(animated: false)
         focusLatestMessageAfterReload()
         ensureVideoMessagesAvailability()
+        scheduleInitialHistoryCompletion()
     }
 
     private func handleInitialHistoryError(_ description: String) {
         isLoading = false
+        scheduleInitialHistoryCompletion()
         loadingIndicator.stopAnimating()
         messageLabel.isHidden = false
         messageLabel.text = "Ошибка при загрузке сообщений: \(description)"
         showRetryLoadButton()
+    }
+
+    private func scheduleInitialHistoryCompletion(after delay: TimeInterval = 0.25) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            self?.isApplyingInitialHistory = false
+        }
     }
 
     private func showRetryLoadButton() {
@@ -530,16 +533,9 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
                 appDelegate.setMessagesViewController(self)
             }
             
-            self.tableView.selectRow(at: lastIndex, animated: false, scrollPosition: .none)
+            self.tableView.scrollToRow(at: lastIndex, at: .bottom, animated: false)
             self.setNeedsFocusUpdate()
             self.updateFocusIfNeeded()
-            
-            if let cell = self.tableView.cellForRow(at: lastIndex) as? MessageCell {
-                print("MessagesViewController: Устанавливаем фокус на последнее сообщение \(lastIndex.row)")
-                cell.setSelected(true, animated: true)
-            } else {
-                print("MessagesViewController: Не удалось получить ячейку для последнего сообщения (focusLatestMessageAfterReload)")
-            }
         }
         
         if delay > 0 {
@@ -556,9 +552,15 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
     }
 
     private func loadOlderMessages() {
-        guard canLoadMoreHistory,
-              !isLoadingOlderMessages,
-              let oldestId = oldestLoadedMessageId else { return }
+        guard !isApplyingInitialHistory,
+              canLoadMoreHistory,
+              !isLoadingOlderMessages else { return }
+        
+        let nextFromId = nextVideoSearchFromMessageId
+        guard nextFromId != 0 else {
+            canLoadMoreHistory = false
+            return
+        }
         
         isLoadingOlderMessages = true
         
@@ -571,17 +573,12 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
         _ = Task { [weak self] in
             guard let self else { return }
             do {
-                print("MessagesViewController: Догружаем историю до сообщения \(oldestId)")
-                let history = try await self.client.getChatHistory(
-                    chatId: self.chatId,
-                    fromMessageId: oldestId,
-                    limit: self.pageSize,
-                    offset: -self.pageSize,
-                    onlyLocal: false
-                )
+                print("MessagesViewController: Догружаем видеосообщения, начиная с \(nextFromId)")
+                let history = try await self.fetchVideoMessages(from: nextFromId)
                 
                 await MainActor.run { [weak self] in
-                    self?.prependHistory(history.messages ?? [],
+                    self?.prependHistory(history.messages,
+                                         nextFromMessageId: history.nextFromMessageId,
                                          anchorMessageId: firstVisibleMessageId,
                                          selectedMessageId: selectedMessageId)
                 }
@@ -598,22 +595,17 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
     }
 
     private func prependHistory(_ rawMessages: [TDLibKit.Message],
+                                nextFromMessageId: Int64,
                                 anchorMessageId: Int64?,
                                 selectedMessageId: Int64?) {
+        nextVideoSearchFromMessageId = nextFromMessageId
+        
         guard !rawMessages.isEmpty else {
-            canLoadMoreHistory = false
+            canLoadMoreHistory = nextFromMessageId != 0
             return
         }
         
-        if let newOldest = rawMessages.last?.id {
-            if let currentOldest = oldestLoadedMessageId {
-                oldestLoadedMessageId = min(currentOldest, newOldest)
-            } else {
-                oldestLoadedMessageId = newOldest
-            }
-        }
-        
-        canLoadMoreHistory = rawMessages.count == Int(pageSize)
+        canLoadMoreHistory = nextFromMessageId != 0
         
         let normalizedMessages = rawMessages
             .reversed()
@@ -694,6 +686,35 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
             messageLabel.isHidden = true
         }
     }
+
+    private func fetchVideoMessages(from fromMessageId: Int64) async throws -> FoundChatMessages {
+        try await client.searchChatMessages(
+            chatId: chatId,
+            filter: .searchMessagesFilterVideo,
+            fromMessageId: fromMessageId,
+            limit: pageSize,
+            messageThreadId: nil,
+            offset: 0,
+            query: nil,
+            savedMessagesTopicId: nil,
+            senderId: nil
+        )
+    }
+    
+    private func updateFixedRowHeightIfNeeded() {
+        let adjustedInsets = tableView.adjustedContentInset
+        let availableHeight = tableView.bounds.height - adjustedInsets.top - adjustedInsets.bottom
+        guard availableHeight > 0 else { return }
+        let targetHeight = floor(availableHeight / 3)
+        guard targetHeight > 0 else { return }
+        if abs(targetHeight - fixedRowHeight) > 0.5 {
+            fixedRowHeight = targetHeight
+            tableView.rowHeight = targetHeight
+            tableView.estimatedRowHeight = targetHeight
+            tableView.beginUpdates()
+            tableView.endUpdates()
+        }
+    }
     
     private func getMessageText(from message: TDLibKit.Message) -> String {
         switch message.content {
@@ -702,9 +723,11 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
         case .messagePhoto(let messagePhoto):
             return messagePhoto.caption.text
         case .messageVideo(let messageVideo):
-            return messageVideo.caption.text
+            let caption = messageVideo.caption.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return caption
         case .messageDocument(let messageDocument):
-            return messageDocument.caption.text
+            let caption = messageDocument.caption.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return caption.isEmpty ? "Документ" : caption
         default:
             return "Неподдерживаемый тип сообщения"
         }
@@ -728,12 +751,13 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
                 requestDownload(for: file.id)
             }
             
-            let expectedSize = max(Int64(file.size), local.downloadedSize)
+            let contiguousSize = max(local.downloadedPrefixSize, 0)
+            let expectedSize = max(Int64(file.size), max(local.downloadedSize, contiguousSize))
             let videoInfo = TG.MessageMedia.VideoInfo(
                 path: path,
                 fileId: file.id,
                 expectedSize: expectedSize,
-                downloadedSize: local.downloadedSize,
+                downloadedSize: contiguousSize,
                 isDownloadingCompleted: local.isDownloadingCompleted,
                 mimeType: messageVideo.video.mimeType.isEmpty ? "video/mp4" : messageVideo.video.mimeType
             )
@@ -773,10 +797,11 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
         }
     }
     
-    private func applyVideoFileUpdate(_ file: TDLibKit.File) -> Bool {
-        var didUpdate = false
+    private func applyVideoFileUpdate(_ file: TDLibKit.File) -> [IndexPath] {
+        var updatedIndexPaths: [IndexPath] = []
         let local = file.local
-        let expectedSize = max(Int64(file.size), local.downloadedSize)
+        let contiguousSize = max(local.downloadedPrefixSize, 0)
+        let expectedSize = max(Int64(file.size), max(local.downloadedSize, contiguousSize))
         for index in messages.indices {
             guard case .video(let info) = messages[index].media,
                   info.fileId == file.id else { continue }
@@ -785,12 +810,12 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
                 path: local.path,
                 fileId: file.id,
                 expectedSize: expectedSize,
-                downloadedSize: local.downloadedSize,
+                downloadedSize: contiguousSize,
                 isDownloadingCompleted: local.isDownloadingCompleted,
                 mimeType: info.mimeType
             )
             messages[index] = messages[index].updatingMedia(.video(updatedInfo))
-            didUpdate = true
+            updatedIndexPaths.append(IndexPath(row: index, section: 0))
         }
         
         if let pendingInfo = pendingVideoInfo, pendingInfo.fileId == file.id {
@@ -798,14 +823,14 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
                 path: local.path,
                 fileId: file.id,
                 expectedSize: expectedSize,
-                downloadedSize: local.downloadedSize,
+                downloadedSize: contiguousSize,
                 isDownloadingCompleted: local.isDownloadingCompleted,
                 mimeType: pendingInfo.mimeType
             )
             tryStartPendingPlaybackIfPossible()
         }
         
-        return didUpdate
+        return updatedIndexPaths
     }
     
     private func requestDownload(for fileId: Int) {
@@ -1140,17 +1165,24 @@ extension MessagesViewController: UITableViewDelegate, UITableViewDataSource {
         }
         let message = messages[indexPath.row]
         cell.configure(with: message, viewController: self, indexPath: indexPath)
-        // Убедимся, что ячейка может быть выбрана
-        cell.selectionStyle = .default 
+        cell.selectionStyle = .none
         return cell
     }
     
     func tableView(_ tableView: UITableView, heightForRowAt indexPath: IndexPath) -> CGFloat {
-        return UITableView.automaticDimension
+        if fixedRowHeight > 0 {
+            return fixedRowHeight
+        }
+        let adjustedInsets = tableView.adjustedContentInset
+        let availableHeight = tableView.bounds.height - adjustedInsets.top - adjustedInsets.bottom
+        if availableHeight > 0 {
+            return floor(availableHeight / 3)
+        }
+        return max(1, floor(UIScreen.main.bounds.height / 3))
     }
     
     func tableView(_ tableView: UITableView, willDisplay cell: UITableViewCell, forRowAt indexPath: IndexPath) {
-        if indexPath.row == 0 {
+        if !isApplyingInitialHistory && indexPath.row == 0 {
             loadOlderMessages()
         }
     }
@@ -1179,19 +1211,30 @@ extension MessagesViewController: UITableViewDelegate, UITableViewDataSource {
 }
 
 private func isLocalVideoReady(at path: String, expectedSize: Int64, downloadedSize: Int64, isCompleted: Bool) -> Bool {
+    guard FileManager.default.fileExists(atPath: path) else {
+        return false
+    }
+    
     if isCompleted {
         return true
     }
+    
     guard let attributes = try? FileManager.default.attributesOfItem(atPath: path),
           let fileSize = attributes[.size] as? UInt64 else {
         return false
     }
+    
+    let contiguousBytes = UInt64(max(downloadedSize, 0))
+    if contiguousBytes > 0 {
+        let minPreviewBytes: UInt64 = 512 * 1024 // достаточно для миниатюры и метаданных
+        let requiredBytes = max(contiguousBytes, minPreviewBytes)
+        return fileSize >= requiredBytes
+    }
+    
     if expectedSize > 0 {
-        return UInt64(expectedSize) <= fileSize
+        return fileSize >= UInt64(expectedSize)
     }
-    if downloadedSize > 0 {
-        return UInt64(downloadedSize) <= fileSize
-    }
+    
     return fileSize > 0
 }
 
@@ -1205,12 +1248,68 @@ private func assetOptions(for mimeType: String) -> [String: Any] {
     return options
 }
 
+// MARK: - Custom Back Button for tvOS
+
+final class TVBackButton: UIButton {
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        setupButton()
+    }
+    
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+    
+    private func setupButton() {
+        setTitle("← Назад", for: .normal)
+        titleLabel?.font = .systemFont(ofSize: 26, weight: .medium)
+        setTitleColor(UIColor(red: 0.85, green: 0.85, blue: 0.87, alpha: 1), for: .normal)
+        backgroundColor = UIColor(red: 0.22, green: 0.22, blue: 0.24, alpha: 1)
+        layer.cornerRadius = 12
+    }
+    
+    override func didUpdateFocus(in context: UIFocusUpdateContext, with coordinator: UIFocusAnimationCoordinator) {
+        super.didUpdateFocus(in: context, with: coordinator)
+        
+        coordinator.addCoordinatedAnimations {
+            if self.isFocused {
+                self.backgroundColor = UIColor(red: 0.30, green: 0.30, blue: 0.32, alpha: 1)
+                self.transform = CGAffineTransform(scaleX: 1.05, y: 1.05)
+            } else {
+                self.backgroundColor = UIColor(red: 0.22, green: 0.22, blue: 0.24, alpha: 1)
+                self.transform = .identity
+            }
+        }
+    }
+}
+
+// MARK: - Message Cell
+
 final class MessageCell: UITableViewCell {
+    private enum Palette {
+        static let incomingBubble = UIColor(red: 0.17, green: 0.19, blue: 0.24, alpha: 1)
+        static let outgoingBubble = UIColor(red: 0.21, green: 0.24, blue: 0.30, alpha: 1)
+        static let incomingBubbleFocused = UIColor(red: 0.22, green: 0.24, blue: 0.30, alpha: 1)
+        static let outgoingBubbleFocused = UIColor(red: 0.26, green: 0.29, blue: 0.36, alpha: 1)
+        static let text = UIColor(red: 0.93, green: 0.93, blue: 0.95, alpha: 1)
+        static let videoBackground = UIColor(red: 0.11, green: 0.12, blue: 0.16, alpha: 1)
+        static let playIcon = UIColor(red: 0.86, green: 0.87, blue: 0.90, alpha: 0.9)
+    }
+    
+    private enum LayoutMetrics {
+        static let defaultMargins = UIEdgeInsets(top: 10, left: 12, bottom: 8, right: 12)
+        static let compactMargins = UIEdgeInsets(top: 6, left: 12, bottom: 4, right: 12)
+        static let defaultSpacing: CGFloat = 6
+        static let compactSpacing: CGFloat = 2
+        static let spacingAfterVideoWithCaption: CGFloat = 8
+        static let spacingAfterVideoWithoutCaption: CGFloat = 2
+        static let videoReserveWithCaption: CGFloat = 72
+        static let videoReserveWithoutCaption: CGFloat = 28
+    }
     private let messageBubble = UIView()
     private let messageLabel = UILabel()
-    private let dateLabel = UILabel()
     private let videoContainer = UIView()
-    private var gradientLayer: CAGradientLayer?
+    private var videoMaxHeightConstraint: NSLayoutConstraint?
     var videoInfo: TG.MessageMedia.VideoInfo?
     private var videoURL: URL? {
         guard let info = videoInfo, !info.path.isEmpty else { return nil }
@@ -1222,6 +1321,7 @@ final class MessageCell: UITableViewCell {
     private var incomingConstraints: [NSLayoutConstraint] = []
     private var outgoingConstraints: [NSLayoutConstraint] = []
     var isUnsupportedVideo = false
+    private var isOutgoingMessage = false
     
     weak var viewController: MessagesViewController?
     var indexPath: IndexPath?
@@ -1235,126 +1335,115 @@ final class MessageCell: UITableViewCell {
         fatalError("init(coder:) has not been implemented")
     }
     
+    private let stackView = UIStackView()
+    
     private func setupUI() {
         backgroundColor = .clear
         contentView.backgroundColor = .clear
         selectionStyle = .none
-        clipsToBounds = false
-        contentView.clipsToBounds = false
+        focusStyle = .custom
         
         messageBubble.translatesAutoresizingMaskIntoConstraints = false
-        messageBubble.layer.cornerRadius = 20
-        messageBubble.clipsToBounds = true
+        messageBubble.layer.cornerRadius = 14
+        messageBubble.backgroundColor = Palette.incomingBubble
         contentView.addSubview(messageBubble)
         
-        // Gradient for incoming messages
-        let gradient = CAGradientLayer()
-        gradient.colors = [
-            UIColor(red: 0.16, green: 0.16, blue: 0.20, alpha: 1).cgColor,
-            UIColor(red: 0.12, green: 0.12, blue: 0.16, alpha: 1).cgColor
-        ]
-        gradient.cornerRadius = 20
-        messageBubble.layer.insertSublayer(gradient, at: 0)
-        gradientLayer = gradient
-        
-        let topConstraint = messageBubble.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 12)
-        let bottomConstraint = messageBubble.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -12)
+        let topConstraint = messageBubble.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 6)
+        let bottomConstraint = messageBubble.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -6)
         topConstraint.priority = UILayoutPriority(999)
         bottomConstraint.priority = UILayoutPriority(999)
         incomingConstraints = [
-            messageBubble.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
-            messageBubble.trailingAnchor.constraint(lessThanOrEqualTo: contentView.trailingAnchor, constant: -100)
+            messageBubble.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 32),
+            messageBubble.trailingAnchor.constraint(lessThanOrEqualTo: contentView.trailingAnchor, constant: -60)
         ]
         outgoingConstraints = [
-            messageBubble.leadingAnchor.constraint(greaterThanOrEqualTo: contentView.leadingAnchor, constant: 100),
-            messageBubble.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20)
+            messageBubble.leadingAnchor.constraint(greaterThanOrEqualTo: contentView.leadingAnchor, constant: 60),
+            messageBubble.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -32)
         ]
         NSLayoutConstraint.activate(incomingConstraints + [topConstraint, bottomConstraint])
-        
-        messageLabel.textColor = .white
-        messageLabel.font = .systemFont(ofSize: 28, weight: .regular)
-        messageLabel.numberOfLines = 0
-        messageLabel.lineBreakMode = .byWordWrapping
-        messageLabel.backgroundColor = .clear
-        
-        dateLabel.textColor = UIColor(white: 0.5, alpha: 1)
-        dateLabel.font = .systemFont(ofSize: 18, weight: .regular)
-        
-        videoContainer.translatesAutoresizingMaskIntoConstraints = false
-        videoContainer.backgroundColor = UIColor(white: 0.08, alpha: 1)
-        videoContainer.isHidden = true
-        videoContainer.layer.cornerRadius = 16
-        videoContainer.clipsToBounds = true
-        
-        self.playButton = nil
 
+        // Stack view для контента
+        stackView.axis = .vertical
+        stackView.spacing = LayoutMetrics.defaultSpacing
+        stackView.alignment = .fill
+        stackView.distribution = .fill
+        stackView.isLayoutMarginsRelativeArrangement = true
+        stackView.layoutMargins = LayoutMetrics.defaultMargins
+        stackView.translatesAutoresizingMaskIntoConstraints = false
+        messageBubble.addSubview(stackView)
+        
+        // Контейнер видео располагаем первым, чтобы подписи шли ниже
+        videoContainer.backgroundColor = Palette.videoBackground
+        videoContainer.isHidden = true
+        videoContainer.layer.cornerRadius = 10
+        videoContainer.clipsToBounds = true
+        videoContainer.translatesAutoresizingMaskIntoConstraints = false
+        stackView.addArrangedSubview(videoContainer)
+        
+        // Иконка воспроизведения
         let playIcon = UIImageView()
         playIcon.translatesAutoresizingMaskIntoConstraints = false
         playIcon.image = UIImage(systemName: "play.circle.fill")
-        playIcon.tintColor = .white
+        playIcon.tintColor = Palette.playIcon
         playIcon.contentMode = .scaleAspectFit
-        playIcon.alpha = 0.9
-        
-        // Play icon shadow
-        playIcon.layer.shadowColor = UIColor.black.cgColor
-        playIcon.layer.shadowOpacity = 0.5
-        playIcon.layer.shadowOffset = CGSize(width: 0, height: 2)
-        playIcon.layer.shadowRadius = 4
-        
         videoContainer.addSubview(playIcon)
         self.playIcon = playIcon
         
-        let stack = UIStackView(arrangedSubviews: [messageLabel, videoContainer, dateLabel])
-        stack.axis = .vertical
-        stack.spacing = 12
-        stack.translatesAutoresizingMaskIntoConstraints = false
+        // Текст сообщения отображается после видео, чтобы его не «выталкивало» вверх
+        messageLabel.textColor = Palette.text
+        messageLabel.font = .systemFont(ofSize: 22, weight: .regular)
+        messageLabel.numberOfLines = 3
+        messageLabel.lineBreakMode = .byTruncatingTail
+        messageLabel.setContentCompressionResistancePriority(.defaultHigh, for: .vertical)
+        messageLabel.setContentHuggingPriority(.defaultHigh, for: .vertical)
+        stackView.addArrangedSubview(messageLabel)
         
-        messageBubble.addSubview(stack)
+        updateLayoutForCaption(true)
         
-        let videoHeightConstraint = videoContainer.heightAnchor.constraint(equalTo: videoContainer.widthAnchor, multiplier: 9/16)
-        videoHeightConstraint.priority = .defaultHigh
+        let equalWidthConstraint = videoContainer.widthAnchor.constraint(equalTo: stackView.widthAnchor)
+        equalWidthConstraint.priority = UILayoutPriority(750)
+        equalWidthConstraint.isActive = true
+        let videoMaxWidthConstraint = videoContainer.widthAnchor.constraint(lessThanOrEqualToConstant: 460)
+        videoMaxWidthConstraint.priority = UILayoutPriority(999)
+        videoMaxWidthConstraint.isActive = true
+        
+        let aspectConstraint = videoContainer.heightAnchor.constraint(equalTo: videoContainer.widthAnchor, multiplier: 9/16)
+        aspectConstraint.priority = UILayoutPriority(950)
+        aspectConstraint.isActive = true
+        videoMaxHeightConstraint = videoContainer.heightAnchor.constraint(
+            lessThanOrEqualTo: messageBubble.heightAnchor,
+            constant: -LayoutMetrics.videoReserveWithCaption
+        )
+        videoMaxHeightConstraint?.priority = UILayoutPriority(999)
+        videoMaxHeightConstraint?.isActive = true
         
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: messageBubble.leadingAnchor, constant: 20),
-            stack.trailingAnchor.constraint(equalTo: messageBubble.trailingAnchor, constant: -20),
-            stack.topAnchor.constraint(equalTo: messageBubble.topAnchor, constant: 16),
-            stack.bottomAnchor.constraint(equalTo: messageBubble.bottomAnchor, constant: -16),
-            
-            videoHeightConstraint,
-            videoContainer.widthAnchor.constraint(lessThanOrEqualToConstant: 500),
+            stackView.topAnchor.constraint(equalTo: messageBubble.topAnchor),
+            stackView.leadingAnchor.constraint(equalTo: messageBubble.leadingAnchor),
+            stackView.trailingAnchor.constraint(equalTo: messageBubble.trailingAnchor),
+            stackView.bottomAnchor.constraint(equalTo: messageBubble.bottomAnchor),
             
             playIcon.centerXAnchor.constraint(equalTo: videoContainer.centerXAnchor),
             playIcon.centerYAnchor.constraint(equalTo: videoContainer.centerYAnchor),
-            playIcon.widthAnchor.constraint(equalToConstant: 80),
-            playIcon.heightAnchor.constraint(equalToConstant: 80)
+            playIcon.widthAnchor.constraint(equalToConstant: 50),
+            playIcon.heightAnchor.constraint(equalToConstant: 50)
         ])
-        
-        stack.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
-        stack.setContentHuggingPriority(.defaultLow, for: .vertical)
     }
     
-    override func layoutSubviews() {
-        super.layoutSubviews()
-        gradientLayer?.frame = messageBubble.bounds
+    override var canBecomeFocused: Bool {
+        return true
     }
     
     private func applyAlignment(isOutgoing: Bool) {
+        isOutgoingMessage = isOutgoing
         if isOutgoing {
             NSLayoutConstraint.deactivate(incomingConstraints)
             NSLayoutConstraint.activate(outgoingConstraints)
-            // Blue gradient for outgoing
-            gradientLayer?.colors = [
-                UIColor(red: 0.2, green: 0.5, blue: 0.95, alpha: 1).cgColor,
-                UIColor(red: 0.15, green: 0.4, blue: 0.85, alpha: 1).cgColor
-            ]
+            messageBubble.backgroundColor = Palette.outgoingBubble
         } else {
             NSLayoutConstraint.deactivate(outgoingConstraints)
             NSLayoutConstraint.activate(incomingConstraints)
-            // Dark gradient for incoming
-            gradientLayer?.colors = [
-                UIColor(red: 0.16, green: 0.16, blue: 0.20, alpha: 1).cgColor,
-                UIColor(red: 0.12, green: 0.12, blue: 0.16, alpha: 1).cgColor
-            ]
+            messageBubble.backgroundColor = Palette.incomingBubble
         }
         contentView.layoutIfNeeded()
     }
@@ -1364,14 +1453,15 @@ final class MessageCell: UITableViewCell {
         
         coordinator.addCoordinatedAnimations {
             if self.isFocused {
-                self.messageBubble.transform = CGAffineTransform(scaleX: 1.04, y: 1.04)
-                self.messageBubble.layer.shadowColor = UIColor.white.cgColor
-                self.messageBubble.layer.shadowOpacity = 0.25
-                self.messageBubble.layer.shadowOffset = CGSize(width: 0, height: 10)
-                self.messageBubble.layer.shadowRadius = 15
+                self.messageBubble.transform = .identity
+                self.messageBubble.layer.borderWidth = 2
+                self.messageBubble.layer.borderColor = UIColor.white.withAlphaComponent(0.08).cgColor
+                self.messageBubble.backgroundColor = self.isOutgoingMessage ? Palette.outgoingBubbleFocused : Palette.incomingBubbleFocused
             } else {
                 self.messageBubble.transform = .identity
-                self.messageBubble.layer.shadowOpacity = 0
+                self.messageBubble.layer.borderWidth = 0
+                self.messageBubble.layer.borderColor = nil
+                self.messageBubble.backgroundColor = self.isOutgoingMessage ? Palette.outgoingBubble : Palette.incomingBubble
             }
         }
     }
@@ -1379,14 +1469,13 @@ final class MessageCell: UITableViewCell {
     func configure(with message: TG.Message, viewController: MessagesViewController, indexPath: IndexPath) {
         self.viewController = viewController
         self.indexPath = indexPath
-        messageLabel.text = message.text.isEmpty ? nil : message.text
+        
+        // Текст сообщения
+        messageLabel.text = message.text
         messageLabel.isHidden = message.text.isEmpty
+        updateLayoutForCaption(!message.text.isEmpty)
         
-        let formatter = DateFormatter()
-        formatter.dateStyle = .short
-        formatter.timeStyle = .short
-        dateLabel.text = formatter.string(from: message.date)
-        
+        // Видео
         if let media = message.media, case .video(let info) = media {
             videoContainer.isHidden = false
             isUnsupportedVideo = !info.isPlayable
@@ -1436,6 +1525,10 @@ final class MessageCell: UITableViewCell {
         }
         
         applyAlignment(isOutgoing: message.isOutgoing)
+        
+        // Принудительно обновляем layout
+        setNeedsLayout()
+        layoutIfNeeded()
     }
     
     private func showLoadingIndicator(withText text: String) {
@@ -1498,23 +1591,33 @@ final class MessageCell: UITableViewCell {
         print("MessageCell: Превью видео настроено успешно.")
     }
     
+    private func updateLayoutForCaption(_ hasCaption: Bool) {
+        stackView.spacing = hasCaption ? LayoutMetrics.defaultSpacing : LayoutMetrics.compactSpacing
+        stackView.layoutMargins = hasCaption ? LayoutMetrics.defaultMargins : LayoutMetrics.compactMargins
+        stackView.setCustomSpacing(
+            hasCaption ? LayoutMetrics.spacingAfterVideoWithCaption : LayoutMetrics.spacingAfterVideoWithoutCaption,
+            after: videoContainer
+        )
+        let reserve = hasCaption ? LayoutMetrics.videoReserveWithCaption : LayoutMetrics.videoReserveWithoutCaption
+        videoMaxHeightConstraint?.constant = -reserve
+    }
+    
     override func prepareForReuse() {
         super.prepareForReuse()
         messageLabel.text = nil
         messageLabel.isHidden = false
-        dateLabel.text = nil
         videoInfo = nil
         isUnsupportedVideo = false
+        isOutgoingMessage = false
         videoPreviewImageView?.removeFromSuperview()
         videoPreviewImageView = nil
         playIcon?.isHidden = true
         messageBubble.transform = .identity
-        messageBubble.layer.shadowOpacity = 0
+        messageBubble.backgroundColor = Palette.incomingBubble
         videoContainer.isHidden = true
         for subview in videoContainer.subviews where subview is UILabel {
             subview.removeFromSuperview()
         }
-        messageBubble.backgroundColor = UIColor(white: 0.2, alpha: 1.0)
         applyAlignment(isOutgoing: false)
     }
     
@@ -1588,8 +1691,9 @@ private final class VideoStreamingCoordinator {
     func handleFileUpdate(_ file: TDLibKit.File) {
         guard file.id == video.fileId else { return }
         let local = file.local
-        let expectedSize = max(Int64(file.size), local.downloadedSize)
-        loader.update(downloadedSize: local.downloadedSize,
+        let contiguousSize = max(local.downloadedPrefixSize, 0)
+        let expectedSize = max(Int64(file.size), max(local.downloadedSize, contiguousSize))
+        loader.update(downloadedSize: contiguousSize,
                       isCompleted: local.isDownloadingCompleted,
                       expectedSize: expectedSize)
     }
