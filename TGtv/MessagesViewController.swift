@@ -301,9 +301,30 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
             if !updatedIndexPaths.isEmpty {
                 let visible = tableView.indexPathsForVisibleRows ?? []
                 let rowsToReload = updatedIndexPaths.filter { visible.contains($0) }
+                print("MessagesViewController: Обновляем \(rowsToReload.count) видимых ячеек из \(updatedIndexPaths.count) обновленных")
                 if !rowsToReload.isEmpty {
                     DispatchQueue.main.async {
                         self.tableView.reloadRows(at: rowsToReload, with: .none)
+                    }
+                }
+                // Также обновляем ячейки, которые станут видимыми, чтобы превью генерировалось заранее
+                // Но делаем это только для файлов, которые готовы для превью
+                let local = update.file.local
+                let contiguousSize = max(local.downloadedPrefixSize, 0)
+                let fileExists = FileManager.default.fileExists(atPath: local.path)
+                let ready = fileExists && isLocalVideoReady(
+                    at: local.path,
+                    expectedSize: Int64(update.file.size),
+                    downloadedSize: contiguousSize,
+                    isCompleted: local.isDownloadingCompleted
+                )
+                if ready {
+                    let notVisible = updatedIndexPaths.filter { !visible.contains($0) }
+                    if !notVisible.isEmpty {
+                        print("MessagesViewController: Файл готов для превью, обновляем \(notVisible.count) невидимых ячеек для предзагрузки превью")
+                        DispatchQueue.main.async {
+                            self.tableView.reloadRows(at: notVisible, with: .none)
+                        }
                     }
                 }
             }
@@ -802,6 +823,9 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
         let local = file.local
         let contiguousSize = max(local.downloadedPrefixSize, 0)
         let expectedSize = max(Int64(file.size), max(local.downloadedSize, contiguousSize))
+        
+        print("MessagesViewController: applyVideoFileUpdate для файла \(file.id), downloadedPrefixSize: \(contiguousSize), downloadedSize: \(local.downloadedSize), expectedSize: \(expectedSize), path: \(local.path)")
+        
         for index in messages.indices {
             guard case .video(let info) = messages[index].media,
                   info.fileId == file.id else { continue }
@@ -816,6 +840,16 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
             )
             messages[index] = messages[index].updatingMedia(.video(updatedInfo))
             updatedIndexPaths.append(IndexPath(row: index, section: 0))
+            
+            // Проверяем, готов ли файл для превью
+            let fileExists = FileManager.default.fileExists(atPath: local.path)
+            let ready = fileExists && isLocalVideoReady(
+                at: local.path,
+                expectedSize: expectedSize,
+                downloadedSize: contiguousSize,
+                isCompleted: local.isDownloadingCompleted
+            )
+            print("MessagesViewController: Файл \(file.id) в сообщении \(messages[index].id) - готов для превью: \(ready), файл существует: \(fileExists)")
         }
         
         if let pendingInfo = pendingVideoInfo, pendingInfo.fileId == file.id {
@@ -1050,12 +1084,20 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
         let fileURL = URL(fileURLWithPath: info.path)
         streamingCoordinator?.stop()
         
+        print("MessagesViewController: Запуск воспроизведения файла \(info.fileId), isCompleted: \(info.isDownloadingCompleted), downloadedSize: \(info.downloadedSize), expectedSize: \(info.expectedSize)")
+        
         let playerItem: AVPlayerItem?
-        if isLocalVideoReady(at: info.path, expectedSize: info.expectedSize, downloadedSize: info.downloadedSize, isCompleted: info.isDownloadingCompleted) {
+        // Для воспроизведения используем потоковое воспроизведение, если файл не полностью загружен
+        // Это важно, так как обычное воспроизведение не работает с частично загруженными файлами
+        if info.isDownloadingCompleted && FileManager.default.fileExists(atPath: info.path) {
+            // Файл полностью загружен - используем обычное воспроизведение
+            print("MessagesViewController: Файл полностью загружен, используем обычное воспроизведение")
             streamingCoordinator = nil
             let asset = AVURLAsset(url: fileURL, options: assetOptions(for: info.mimeType))
             playerItem = AVPlayerItem(asset: asset)
         } else {
+            // Файл не полностью загружен - используем потоковое воспроизведение
+            print("MessagesViewController: Файл не полностью загружен, используем потоковое воспроизведение. Загружено: \(info.downloadedSize)/\(info.expectedSize)")
             let coordinator = VideoStreamingCoordinator(video: info, client: client)
             streamingCoordinator = coordinator
             coordinator.startDownloadIfNeeded()
@@ -1064,6 +1106,7 @@ final class MessagesViewController: UIViewController, AVPlayerViewControllerDele
         
         guard let preparedItem = playerItem else {
             streamingCoordinator = nil
+            print("MessagesViewController: ОШИБКА - не удалось создать playerItem для файла \(info.fileId)")
             showAlert(title: "Ошибка", message: "Не удалось подготовить потоковое воспроизведение.")
             return
         }
@@ -1212,30 +1255,55 @@ extension MessagesViewController: UITableViewDelegate, UITableViewDataSource {
 
 private func isLocalVideoReady(at path: String, expectedSize: Int64, downloadedSize: Int64, isCompleted: Bool) -> Bool {
     guard FileManager.default.fileExists(atPath: path) else {
+        print("isLocalVideoReady: Файл не существует: \(path)")
         return false
     }
     
     if isCompleted {
+        print("isLocalVideoReady: Файл полностью загружен: \(path)")
         return true
     }
     
     guard let attributes = try? FileManager.default.attributesOfItem(atPath: path),
           let fileSize = attributes[.size] as? UInt64 else {
+        print("isLocalVideoReady: Не удалось получить размер файла: \(path)")
         return false
     }
     
+    // Минимальный размер для генерации превью (512 КБ достаточно для метаданных и первого кадра)
+    let minPreviewBytes: UInt64 = 512 * 1024
+    
+    // Если файл уже достаточно большой для превью, считаем его готовым
+    if fileSize >= minPreviewBytes {
+        print("isLocalVideoReady: Файл достаточно большой для превью: \(path), размер: \(fileSize) байт")
+        return true
+    }
+    
+    // Если есть информация о загруженных данных, проверяем их
     let contiguousBytes = UInt64(max(downloadedSize, 0))
-    if contiguousBytes > 0 {
-        let minPreviewBytes: UInt64 = 512 * 1024 // достаточно для миниатюры и метаданных
-        let requiredBytes = max(contiguousBytes, minPreviewBytes)
-        return fileSize >= requiredBytes
+    if contiguousBytes >= minPreviewBytes {
+        // Если загружено достаточно данных, проверяем, что файл на диске соответствует
+        // Используем более мягкую проверку: файл должен быть хотя бы 80% от загруженных данных
+        let minFileSize = contiguousBytes * 80 / 100
+        let ready = fileSize >= minFileSize
+        print("isLocalVideoReady: Проверка по загруженным данным: \(path), fileSize: \(fileSize), contiguousBytes: \(contiguousBytes), minFileSize: \(minFileSize), ready: \(ready)")
+        return ready
     }
     
+    // Если ожидаемый размер известен и файл уже достаточно большой
     if expectedSize > 0 {
-        return fileSize >= UInt64(expectedSize)
+        let expectedUInt64 = UInt64(expectedSize)
+        // Если файл загружен хотя бы на 1% или больше минимума для превью
+        let minRequired = max(expectedUInt64 / 100, minPreviewBytes)
+        let ready = fileSize >= minRequired
+        print("isLocalVideoReady: Проверка по ожидаемому размеру: \(path), fileSize: \(fileSize), expectedSize: \(expectedUInt64), minRequired: \(minRequired), ready: \(ready)")
+        return ready
     }
     
-    return fileSize > 0
+    // В крайнем случае, если файл больше минимума для превью
+    let ready = fileSize >= minPreviewBytes
+    print("isLocalVideoReady: Финальная проверка: \(path), fileSize: \(fileSize), minPreviewBytes: \(minPreviewBytes), ready: \(ready)")
+    return ready
 }
 
 private func assetOptions(for mimeType: String) -> [String: Any] {
@@ -1322,6 +1390,7 @@ final class MessageCell: UITableViewCell {
     private var outgoingConstraints: [NSLayoutConstraint] = []
     var isUnsupportedVideo = false
     private var isOutgoingMessage = false
+    private var isGeneratingThumbnail = false
     
     weak var viewController: MessagesViewController?
     var indexPath: IndexPath?
@@ -1477,6 +1546,7 @@ final class MessageCell: UITableViewCell {
         
         // Видео
         if let media = message.media, case .video(let info) = media {
+            print("MessageCell: configure вызван для сообщения \(message.id), файл \(info.fileId), путь: \(info.path), downloadedSize: \(info.downloadedSize), expectedSize: \(info.expectedSize), isCompleted: \(info.isDownloadingCompleted)")
             videoContainer.isHidden = false
             isUnsupportedVideo = !info.isPlayable
             
@@ -1493,19 +1563,41 @@ final class MessageCell: UITableViewCell {
                     )
                     
                     if ready {
-                        if let url = videoURL {
+                        // Если превью еще нет и не генерируется, генерируем его
+                        if videoPreviewImageView == nil && !isGeneratingThumbnail, let url = videoURL {
+                            print("MessageCell: Генерируем превью для файла \(info.fileId), путь: \(path), размер: \(info.downloadedSize)/\(info.expectedSize)")
                             generateThumbnailAsync(for: info, url: url)
+                        } else if videoPreviewImageView != nil {
+                            print("MessageCell: Превью уже есть для файла \(info.fileId)")
+                        } else if isGeneratingThumbnail {
+                            print("MessageCell: Превью уже генерируется для файла \(info.fileId)")
                         }
+                        // Показываем превью, если оно есть
+                        videoPreviewImageView?.isHidden = false
                         playIcon?.isHidden = false
+                        // Убираем индикатор загрузки, если он есть и превью уже есть
+                        if videoPreviewImageView != nil {
+                            for subview in videoContainer.subviews where subview is UILabel {
+                                subview.removeFromSuperview()
+                            }
+                        }
                     } else if !info.isDownloadingCompleted {
-                        showLoadingIndicator(withText: "Загрузка...")
+                        print("MessageCell: Файл \(info.fileId) еще не готов для превью, загружено: \(info.downloadedSize)/\(info.expectedSize)")
+                        // Если файл еще загружается, показываем индикатор
+                        // Но не скрываем превью, если оно уже есть (чтобы не мигало)
+                        if videoPreviewImageView == nil {
+                            showLoadingIndicator(withText: "Загрузка...")
+                        }
                         playIcon?.isHidden = true
                     } else {
                         showLoadingIndicator(withText: "Повреждено")
                         playIcon?.isHidden = true
                     }
                 } else {
-                    showLoadingIndicator(withText: "Загрузка...")
+                    // Файл еще не существует на диске
+                    if videoPreviewImageView == nil {
+                        showLoadingIndicator(withText: "Загрузка...")
+                    }
                     playIcon?.isHidden = true
                 }
             } else {
@@ -1549,6 +1641,19 @@ final class MessageCell: UITableViewCell {
     }
     
     private func generateThumbnailAsync(for info: TG.MessageMedia.VideoInfo, url: URL) {
+        // Предотвращаем множественную генерацию
+        guard !isGeneratingThumbnail else {
+            print("MessageCell: Превью уже генерируется, пропускаем")
+            return
+        }
+        
+        // Проверяем, что это тот же файл
+        guard let currentInfo = videoInfo, currentInfo.fileId == info.fileId else {
+            print("MessageCell: Информация о видео изменилась, пропускаем генерацию превью")
+            return
+        }
+        
+        isGeneratingThumbnail = true
         let asset = AVURLAsset(url: url, options: assetOptions(for: info.mimeType))
         let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true
@@ -1560,11 +1665,16 @@ final class MessageCell: UITableViewCell {
                 let cgImage = try await generator.image(at: time).image
                 let thumbnail = UIImage(cgImage: cgImage)
                 await MainActor.run {
-                    self.setupVideoContainer(with: thumbnail)
+                    // Проверяем, что информация о видео не изменилась
+                    if let currentInfo = self.videoInfo, currentInfo.fileId == info.fileId {
+                        self.setupVideoContainer(with: thumbnail)
+                    }
+                    self.isGeneratingThumbnail = false
                 }
             } catch {
                 print("MessageCell: Ошибка создания превью (Async): \(error.localizedDescription)")
                 await MainActor.run {
+                    self.isGeneratingThumbnail = false
                     self.playIcon?.isHidden = false
                 }
             }
@@ -1588,7 +1698,13 @@ final class MessageCell: UITableViewCell {
         ])
         self.videoPreviewImageView?.isHidden = false
         self.playIcon?.isHidden = false
-        print("MessageCell: Превью видео настроено успешно.")
+        // Убираем индикатор загрузки
+        for subview in videoContainer.subviews where subview is UILabel {
+            subview.removeFromSuperview()
+        }
+        if let fileId = videoInfo?.fileId {
+            print("MessageCell: Превью видео настроено успешно для файла \(fileId).")
+        }
     }
     
     private func updateLayoutForCaption(_ hasCaption: Bool) {
@@ -1609,6 +1725,7 @@ final class MessageCell: UITableViewCell {
         videoInfo = nil
         isUnsupportedVideo = false
         isOutgoingMessage = false
+        isGeneratingThumbnail = false
         videoPreviewImageView?.removeFromSuperview()
         videoPreviewImageView = nil
         playIcon?.isHidden = true
@@ -1682,10 +1799,30 @@ private final class VideoStreamingCoordinator {
     }
     
     func makePlayerItem() -> AVPlayerItem? {
+        print("VideoStreamingCoordinator: Создаем playerItem для файла \(video.fileId), downloadedSize: \(video.downloadedSize), expectedSize: \(video.expectedSize)")
+        
+        // Проверяем, что файл существует и имеет данные
+        guard FileManager.default.fileExists(atPath: video.path) else {
+            print("VideoStreamingCoordinator: Файл не существует: \(video.path)")
+            return nil
+        }
+        
+        // Проверяем размер файла
+        if let attributes = try? FileManager.default.attributesOfItem(atPath: video.path),
+           let fileSize = attributes[.size] as? UInt64 {
+            print("VideoStreamingCoordinator: Размер файла на диске: \(fileSize) байт")
+            if fileSize == 0 {
+                print("VideoStreamingCoordinator: Файл пустой, не можем создать playerItem")
+                return nil
+            }
+        }
+        
         let asset = AVURLAsset(url: loader.streamURL)
         self.asset = asset
         asset.resourceLoader.setDelegate(loader, queue: loader.queue)
-        return AVPlayerItem(asset: asset)
+        let playerItem = AVPlayerItem(asset: asset)
+        print("VideoStreamingCoordinator: playerItem создан успешно")
+        return playerItem
     }
     
     func handleFileUpdate(_ file: TDLibKit.File) {
@@ -1793,11 +1930,29 @@ private final class ProgressiveFileResourceLoader: NSObject, AVAssetResourceLoad
             currentOffset = requestedOffset
         }
         
+        // Получаем реальный размер файла на диске
+        guard let fileSize = getFileSize() else {
+            print("ProgressiveFileResourceLoader: Не удалось получить размер файла")
+            if !isCompleted {
+                return false
+            }
+            finish(loadingRequest)
+            return true
+        }
+        
         let endOffset = requestedOffset + requestedLength
-        let availableBytes = downloadedSize
+        // Используем минимум из загруженных данных и реального размера файла
+        let availableBytes = min(Int64(fileSize), downloadedSize)
         
         if availableBytes <= currentOffset {
-            return false
+            print("ProgressiveFileResourceLoader: Запрос за пределами доступных данных: offset=\(currentOffset), available=\(availableBytes), fileSize=\(fileSize), downloadedSize=\(downloadedSize), isCompleted=\(isCompleted)")
+            // Если файл еще загружается, не завершаем запрос - он будет обработан позже
+            if !isCompleted {
+                return false
+            }
+            // Если файл завершен, но данных нет - это ошибка
+            finish(loadingRequest)
+            return true
         }
         
         let bytesToRead = min(endOffset - currentOffset, availableBytes - currentOffset)
@@ -1810,6 +1965,7 @@ private final class ProgressiveFileResourceLoader: NSObject, AVAssetResourceLoad
         }
         
         guard let data = readData(offset: currentOffset, length: Int(bytesToRead)), !data.isEmpty else {
+            print("ProgressiveFileResourceLoader: Не удалось прочитать данные: offset=\(currentOffset), length=\(bytesToRead), fileSize=\(fileSize)")
             if isCompleted {
                 finish(loadingRequest)
                 return true
@@ -1818,6 +1974,7 @@ private final class ProgressiveFileResourceLoader: NSObject, AVAssetResourceLoad
         }
         
         dataRequest.respond(with: data)
+        print("ProgressiveFileResourceLoader: Отправлено \(data.count) байт из \(bytesToRead) запрошенных, offset=\(currentOffset), requested=\(requestedLength)")
         
         let fullySatisfied = (currentOffset + Int64(data.count)) >= endOffset
         if fullySatisfied {
@@ -1826,6 +1983,15 @@ private final class ProgressiveFileResourceLoader: NSObject, AVAssetResourceLoad
         }
         
         return false
+    }
+    
+    private func getFileSize() -> UInt64? {
+        guard FileManager.default.fileExists(atPath: fileURL.path) else { return nil }
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: fileURL.path),
+              let size = attributes[.size] as? UInt64 else {
+            return nil
+        }
+        return size
     }
     
     private func finish(_ loadingRequest: AVAssetResourceLoadingRequest) {
@@ -1844,15 +2010,42 @@ private final class ProgressiveFileResourceLoader: NSObject, AVAssetResourceLoad
     
     private func readData(offset: Int64, length: Int) -> Data? {
         fileReadQueue.sync {
-            guard FileManager.default.fileExists(atPath: fileURL.path) else { return nil }
+            guard FileManager.default.fileExists(atPath: fileURL.path) else {
+                print("ProgressiveFileResourceLoader: Файл не существует: \(fileURL.path)")
+                return nil
+            }
+            
+            // Проверяем размер файла перед чтением
+            guard let fileSize = getFileSize() else {
+                print("ProgressiveFileResourceLoader: Не удалось получить размер файла")
+                return nil
+            }
+            
+            // Защита от чтения за пределами файла
+            let safeOffset = min(UInt64(offset), fileSize)
+            let availableBytes = fileSize - safeOffset
+            let safeLength = min(length, Int(availableBytes))
+            
+            guard safeLength > 0 else {
+                print("ProgressiveFileResourceLoader: Нет данных для чтения: offset=\(offset), fileSize=\(fileSize), requestedLength=\(length)")
+                return nil
+            }
+            
             do {
                 let handle = try FileHandle(forReadingFrom: fileURL)
-                try handle.seek(toOffset: UInt64(offset))
-                let data = handle.readData(ofLength: length)
-                try handle.close()
+                defer {
+                    try? handle.close()
+                }
+                try handle.seek(toOffset: safeOffset)
+                let data = handle.readData(ofLength: safeLength)
+                
+                if data.isEmpty {
+                    print("ProgressiveFileResourceLoader: Прочитано 0 байт: offset=\(safeOffset), length=\(safeLength), fileSize=\(fileSize)")
+                }
+                
                 return data
             } catch {
-                print("ProgressiveFileResourceLoader: Ошибка чтения файла \(error)")
+                print("ProgressiveFileResourceLoader: Ошибка чтения файла: \(error), offset=\(safeOffset), length=\(safeLength)")
                 return nil
             }
         }
