@@ -480,7 +480,7 @@ extension HomeViewController: UICollectionViewDelegate {
         await MainActor.run {
             self.setLoading(false)
             self.hideFullscreenLoading()
-            self.showAlert(title: "Видео загружается", message: "Не удалось получить начало файла. Попробуйте ещё раз чуть позже.")
+            print("[stream] prefix timeout for fileId=\(item.videoFileId)")
         }
     }
 
@@ -497,10 +497,7 @@ extension HomeViewController: UICollectionViewDelegate {
             self.hideFullscreenLoading()
             currentPlaybackFileId = info.fileId
             currentPlaybackMimeType = info.mimeType
-            guard let playableURL = await ensurePlayableLocalURL(for: info) else {
-                showAlert(title: "Аудио не поддерживается", message: "Аудиодорожка не совместима с tvOS. Попробуйте другой файл или перекодируйте.")
-                return
-            }
+            let playableURL = await ensurePlayableLocalURL(for: info) ?? URL(fileURLWithPath: info.path)
             let asset = AVURLAsset(url: playableURL, options: assetOptions(for: info.mimeType))
             await logAssetInfo(asset, fileId: info.fileId, label: "full-download")
             let playerItem = AVPlayerItem(asset: asset)
@@ -575,7 +572,6 @@ extension HomeViewController: UICollectionViewDelegate {
         NotificationCenter.default.addObserver(forName: .AVPlayerItemFailedToPlayToEndTime, object: playerItem, queue: .main) { [weak self] note in
             if let err = (note.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? NSError) {
                 print("[stream] FailedToPlayToEnd fileId=\(self?.currentPlaybackFileId ?? -1) err=\(err.domain) code=\(err.code) \(err.localizedDescription)")
-                self?.showAlert(title: "Ошибка воспроизведения", message: err.localizedDescription)
             } else {
                 print("[stream] FailedToPlayToEnd fileId=\(self?.currentPlaybackFileId ?? -1) err=nil")
             }
@@ -650,6 +646,8 @@ extension HomeViewController: UICollectionViewDelegate {
     }
     
     private func showAlert(title: String, message: String) {
+        // Если уже что-то показано (алерт/плеер) — не показываем, чтобы избежать гонок
+        guard presentedViewController == nil else { return }
         let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "OK", style: .default))
         present(alert, animated: true)
@@ -772,7 +770,7 @@ extension HomeViewController: UICollectionViewDelegate {
                 case .failed:
                     let message = item.error?.localizedDescription ?? "Неизвестная ошибка воспроизведения"
                     let err = item.error as NSError?
-                    print("[stream] playerItem failed fileId=\(self.currentPlaybackFileId ?? -1) err=\(err?.domain ?? "nil") code=\(err?.code ?? 0) \(message)")
+                print("[stream] playerItem failed fileId=\(self.currentPlaybackFileId ?? -1) err=\(err?.domain ?? "nil") code=\(err?.code ?? 0) \(message)")
                     if self.isRecoveringPlayback || self.isStreamFailed { return }
                     self.isStreamFailed = true
                     self.isRecoveringPlayback = true
@@ -781,9 +779,7 @@ extension HomeViewController: UICollectionViewDelegate {
                         defer { self.isRecoveringPlayback = false }
                         guard let fileId = self.currentPlaybackFileId else {
                             await MainActor.run {
-                                let alert = UIAlertController(title: "Ошибка воспроизведения", message: message, preferredStyle: .alert)
-                                alert.addAction(UIAlertAction(title: "OK", style: .default))
-                                controller?.present(alert, animated: true)
+                                print("[stream] playerItem failed without fileId: \(message)")
                             }
                             return
                         }
@@ -791,14 +787,7 @@ extension HomeViewController: UICollectionViewDelegate {
                         if let file = try? await self.viewModel.client.getFile(fileId: fileId) {
                             print("[stream] recovery check fileId=\(fileId) downloadedPrefix=\(max(file.local.downloadedPrefixSize, 0)) expected=\(file.size) completed=\(file.local.isDownloadingCompleted)")
                         }
-                        guard let full = await self.downloadFullFileIfNeeded(fileId: fileId) else {
-                            await MainActor.run {
-                                let alert = UIAlertController(title: "Ошибка воспроизведения", message: message, preferredStyle: .alert)
-                                alert.addAction(UIAlertAction(title: "OK", style: .default))
-                                controller?.present(alert, animated: true)
-                            }
-                            return
-                        }
+                        guard let full = await self.downloadFullFileIfNeeded(fileId: fileId) else { return }
                         print("[stream] recovery full fileId=\(fileId) downloaded=\(full.local.downloadedSize) expected=\(full.size) completed=\(full.local.isDownloadingCompleted)")
                         let updatedInfo = TG.MessageMedia.VideoInfo(
                             path: full.local.path,
@@ -808,14 +797,7 @@ extension HomeViewController: UICollectionViewDelegate {
                             isDownloadingCompleted: full.local.isDownloadingCompleted,
                             mimeType: self.currentPlaybackMimeType ?? ""
                         )
-                        guard let playable = await self.ensurePlayableLocalURL(for: updatedInfo) else {
-                            await MainActor.run {
-                                let alert = UIAlertController(title: "Ошибка воспроизведения", message: message, preferredStyle: .alert)
-                                alert.addAction(UIAlertAction(title: "OK", style: .default))
-                                controller?.present(alert, animated: true)
-                            }
-                            return
-                        }
+                        guard let playable = await self.ensurePlayableLocalURL(for: updatedInfo) else { return }
                         await MainActor.run {
                             let asset = AVURLAsset(url: playable, options: self.assetOptions(for: updatedInfo.mimeType))
                             let newItem = AVPlayerItem(asset: asset)
@@ -867,8 +849,12 @@ extension HomeViewController: UICollectionViewDelegate {
             forName: .AVPlayerItemFailedToPlayToEndTime,
             object: item,
             queue: .main
-        ) { note in
-            _ = (note.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? NSError)?.localizedDescription
+        ) { [weak self] note in
+            if let err = (note.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? NSError) {
+                print("[stream] FailedToPlayToEnd fileId=\(self?.currentPlaybackFileId ?? -1) err=\(err.domain) code=\(err.code) \(err.localizedDescription)")
+            } else {
+                print("[stream] FailedToPlayToEnd fileId=\(self?.currentPlaybackFileId ?? -1) err=nil")
+            }
         }
         
         NotificationCenter.default.addObserver(
