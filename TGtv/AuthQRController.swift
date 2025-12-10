@@ -12,6 +12,7 @@ final class AuthQRController: UIViewController {
     private var passwordTextField: UITextField!
     private var loginButton: UIButton!
     private var passwordView: UIView!
+    private var backgroundImageView: UIImageView!
     private var cancellables = Set<AnyCancellable>()
     
     // tvOS safe area (Apple HIG)
@@ -33,14 +34,37 @@ final class AuthQRController: UIViewController {
     }
     
     private func setupUI() {
-        // Gradient background
-        let gradient = CAGradientLayer()
-        gradient.colors = [
-            UIColor(red: 0.08, green: 0.08, blue: 0.14, alpha: 1).cgColor,
-            UIColor(red: 0.04, green: 0.04, blue: 0.08, alpha: 1).cgColor
-        ]
-        gradient.frame = view.bounds
-        view.layer.insertSublayer(gradient, at: 0)
+        // Background image + gradient overlay
+        backgroundImageView = UIImageView()
+        backgroundImageView.translatesAutoresizingMaskIntoConstraints = false
+        backgroundImageView.contentMode = .scaleAspectFill
+        // Пытаемся загрузить фон из ресурсов; если не найден — ставим запасной тёмный цвет
+        if let img = UIImage(named: "Background Image") {
+            backgroundImageView.image = img
+        } else if let path = Bundle.main.path(forResource: "Background Image", ofType: "png"),
+                  let img = UIImage(contentsOfFile: path) {
+            backgroundImageView.image = img
+        } else {
+            backgroundImageView.backgroundColor = UIColor(red: 0.06, green: 0.07, blue: 0.12, alpha: 1)
+        }
+        view.addSubview(backgroundImageView)
+        NSLayoutConstraint.activate([
+            backgroundImageView.topAnchor.constraint(equalTo: view.topAnchor),
+            backgroundImageView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            backgroundImageView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            backgroundImageView.trailingAnchor.constraint(equalTo: view.trailingAnchor)
+        ])
+
+        let gradientView = UIView()
+        gradientView.translatesAutoresizingMaskIntoConstraints = false
+        gradientView.backgroundColor = UIColor(white: 0, alpha: 0.45)
+        view.addSubview(gradientView)
+        NSLayoutConstraint.activate([
+            gradientView.topAnchor.constraint(equalTo: view.topAnchor),
+            gradientView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            gradientView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            gradientView.trailingAnchor.constraint(equalTo: view.trailingAnchor)
+        ])
         
         // Title
         titleLabel = UILabel()
@@ -61,10 +85,10 @@ final class AuthQRController: UIViewController {
         // QR Container with shadow
         qrContainerView = UIView()
         qrContainerView.translatesAutoresizingMaskIntoConstraints = false
-        qrContainerView.backgroundColor = .white
+        qrContainerView.backgroundColor = UIColor(white: 0, alpha: 0.6)
         qrContainerView.layer.cornerRadius = 24
-        qrContainerView.layer.shadowColor = UIColor.white.cgColor
-        qrContainerView.layer.shadowOpacity = 0.15
+        qrContainerView.layer.shadowColor = UIColor.black.cgColor
+        qrContainerView.layer.shadowOpacity = 0.25
         qrContainerView.layer.shadowOffset = .zero
         qrContainerView.layer.shadowRadius = 30
         qrContainerView.isHidden = true
@@ -122,26 +146,27 @@ final class AuthQRController: UIViewController {
         passwordView.addSubview(loginButton)
         
         NSLayoutConstraint.activate([
-            titleLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            titleLabel.leadingAnchor.constraint(equalTo: qrContainerView.leadingAnchor, constant: 20),
+            titleLabel.trailingAnchor.constraint(equalTo: qrContainerView.trailingAnchor, constant: -20),
             titleLabel.topAnchor.constraint(equalTo: view.topAnchor, constant: tvSafeInsets.top + 40),
             
-            loadingIndicator.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            loadingIndicator.centerXAnchor.constraint(equalTo: qrContainerView.centerXAnchor),
             loadingIndicator.centerYAnchor.constraint(equalTo: view.centerYAnchor),
             
-            qrContainerView.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            qrContainerView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: tvSafeInsets.left),
             qrContainerView.centerYAnchor.constraint(equalTo: view.centerYAnchor, constant: -20),
-            qrContainerView.widthAnchor.constraint(equalToConstant: 340),
-            qrContainerView.heightAnchor.constraint(equalToConstant: 340),
+            qrContainerView.widthAnchor.constraint(equalToConstant: 420),
+            qrContainerView.heightAnchor.constraint(equalToConstant: 360),
             
             qrImageView.topAnchor.constraint(equalTo: qrContainerView.topAnchor, constant: 20),
             qrImageView.leadingAnchor.constraint(equalTo: qrContainerView.leadingAnchor, constant: 20),
             qrImageView.trailingAnchor.constraint(equalTo: qrContainerView.trailingAnchor, constant: -20),
             qrImageView.bottomAnchor.constraint(equalTo: qrContainerView.bottomAnchor, constant: -20),
             
-            statusLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            statusLabel.centerXAnchor.constraint(equalTo: qrContainerView.centerXAnchor),
             statusLabel.topAnchor.constraint(equalTo: qrContainerView.bottomAnchor, constant: 40),
-            statusLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: tvSafeInsets.left),
-            statusLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -tvSafeInsets.right),
+            statusLabel.leadingAnchor.constraint(equalTo: qrContainerView.leadingAnchor, constant: 8),
+            statusLabel.trailingAnchor.constraint(equalTo: qrContainerView.trailingAnchor, constant: -8),
             
             passwordView.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             passwordView.centerYAnchor.constraint(equalTo: view.centerYAnchor),
@@ -165,9 +190,6 @@ final class AuthQRController: UIViewController {
     
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
-        if let gradient = view.layer.sublayers?.first as? CAGradientLayer {
-            gradient.frame = view.bounds
-        }
     }
     
     private func setupBindings() {
@@ -210,20 +232,36 @@ final class AuthQRController: UIViewController {
         authService.$isAuthorized
             .receive(on: DispatchQueue.main)
             .sink { [weak self] isAuthorized in
-                guard let self, isAuthorized else { return }
-                self.loadingIndicator.stopAnimating()
-                self.loadingIndicator.isHidden = true
-                self.qrContainerView.isHidden = true
-                self.passwordView.isHidden = true
-                self.statusLabel.text = "Авторизация успешна ✓"
-                self.statusLabel.textColor = UIColor(red: 0.3, green: 0.8, blue: 0.4, alpha: 1)
+                guard let self else { return }
                 
-                self.loadingIndicator.isHidden = false
-                self.loadingIndicator.startAnimating()
-                
-                DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                if isAuthorized {
                     self.loadingIndicator.stopAnimating()
                     self.loadingIndicator.isHidden = true
+                    self.qrContainerView.isHidden = true
+                    self.passwordView.isHidden = true
+                    self.statusLabel.text = "Авторизация успешна ✓"
+                    self.statusLabel.textColor = UIColor(red: 0.3, green: 0.8, blue: 0.4, alpha: 1)
+                    
+                    self.loadingIndicator.isHidden = false
+                    self.loadingIndicator.startAnimating()
+                    
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                        self.loadingIndicator.stopAnimating()
+                        self.loadingIndicator.isHidden = true
+                    }
+                } else {
+                    // Сброс UI при выходе, чтобы не застревать на экране успеха
+                    self.statusLabel.text = "Подготовка..."
+                    self.statusLabel.textColor = UIColor(white: 0.7, alpha: 1)
+                    self.qrContainerView.isHidden = true
+                    self.passwordView.isHidden = true
+                    self.loadingIndicator.isHidden = false
+                    self.loadingIndicator.startAnimating()
+                    
+                    // Запрашиваем актуальное состояние авторизации и QR
+                    Task { @MainActor in
+                        await self.authService.checkAuthState()
+                    }
                 }
             }
             .store(in: &cancellables)

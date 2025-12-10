@@ -7,19 +7,29 @@ final class ChatListViewController: UICollectionViewController {
     }
     
     private let viewModel: ChatListViewModel
+    private let onSaveSelection: ((Set<Int64>) -> Void)?
+    private var selectedChatIds: Set<Int64>
     private var cancellables = Set<AnyCancellable>()
     private let loadingIndicator = UIActivityIndicatorView(style: .large)
     private let progressLabel = UILabel()
     private let errorLabel = UILabel()
     private let searchContainer = UIVisualEffectView(effect: UIBlurEffect(style: .dark))
     private let searchField = UITextField()
+    private let settingsButton = UIButton(type: .system)
+    private let selectionStatusLabel = UILabel()
+    private let saveButton = UIButton(type: .system)
+    private let searchBackgroundNormal = UIColor(white: 0.12, alpha: 0.9)
+    private let searchBackgroundFocused = UIColor(white: 0.2, alpha: 0.95)
+    private let settingsFocusedBackground = UIColor(white: 1, alpha: 0.14)
     private var dataSource: UICollectionViewDiffableDataSource<Section, TG.Chat>!
     
     // tvOS safe area insets (Apple HIG: 60pt top/bottom, 80pt sides)
     private let tvSafeInsets = UIEdgeInsets(top: 60, left: 80, bottom: 60, right: 80)
     
-    init(viewModel: ChatListViewModel) {
+    init(viewModel: ChatListViewModel, selectedChats: Set<Int64> = [], onSaveSelection: ((Set<Int64>) -> Void)? = nil) {
         self.viewModel = viewModel
+        self.selectedChatIds = selectedChats
+        self.onSaveSelection = onSaveSelection
         super.init(collectionViewLayout: Self.createLayout())
     }
     
@@ -77,12 +87,20 @@ final class ChatListViewController: UICollectionViewController {
         collectionView.scrollIndicatorInsets = collectionView.contentInset
         collectionView.remembersLastFocusedIndexPath = true
         collectionView.clipsToBounds = false
+        
+        if onSaveSelection != nil {
+            navigationItem.title = "Выбор чатов"
+        } else {
+            navigationItem.title = "Список чатов"
+        }
     }
     
     private func setupSearchBar() {
         searchContainer.translatesAutoresizingMaskIntoConstraints = false
         searchContainer.layer.cornerRadius = 18
         searchContainer.clipsToBounds = true
+        searchContainer.backgroundColor = searchBackgroundNormal
+        searchContainer.contentView.backgroundColor = .clear
         view.addSubview(searchContainer)
         
         let searchIcon = UIImageView(image: UIImage(systemName: "magnifyingglass"))
@@ -101,9 +119,36 @@ final class ChatListViewController: UICollectionViewController {
         searchField.clearButtonMode = .whileEditing
         searchField.backgroundColor = .clear
         searchField.addTarget(self, action: #selector(searchTextDidChange(_:)), for: .editingChanged)
+        searchField.tintColor = .systemBlue
+        searchField.attributedPlaceholder = NSAttributedString(
+            string: "Поиск чатов",
+            attributes: [.foregroundColor: UIColor(white: 0.6, alpha: 1)]
+        )
+        
+        settingsButton.translatesAutoresizingMaskIntoConstraints = false
+        settingsButton.setTitle("Настройки", for: .normal)
+        settingsButton.titleLabel?.font = .systemFont(ofSize: 28, weight: .semibold)
+        settingsButton.setTitleColor(.white, for: .normal)
+        settingsButton.setTitleColor(.white, for: .focused)
+        settingsButton.addTarget(self, action: #selector(openSettings), for: .primaryActionTriggered)
+        if #available(tvOS 15.0, *) {
+            var settingsConfig = settingsButton.configuration ?? UIButton.Configuration.plain()
+            settingsConfig.title = settingsConfig.title ?? settingsButton.title(for: .normal) ?? "Настройки"
+            settingsConfig.baseForegroundColor = settingsButton.titleColor(for: .normal)
+            settingsConfig.contentInsets = NSDirectionalEdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16)
+            settingsConfig.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
+                var outgoing = incoming
+                outgoing.font = .systemFont(ofSize: 28, weight: .semibold)
+                return outgoing
+            }
+            settingsButton.configuration = settingsConfig
+        } else {
+            settingsButton.contentEdgeInsets = UIEdgeInsets(top: 12, left: 16, bottom: 12, right: 16)
+        }
         
         searchContainer.contentView.addSubview(searchIcon)
         searchContainer.contentView.addSubview(searchField)
+        searchContainer.contentView.addSubview(settingsButton)
         
         NSLayoutConstraint.activate([
             searchContainer.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 20),
@@ -117,10 +162,60 @@ final class ChatListViewController: UICollectionViewController {
             searchIcon.heightAnchor.constraint(equalToConstant: 32),
             
             searchField.leadingAnchor.constraint(equalTo: searchIcon.trailingAnchor, constant: 16),
-            searchField.trailingAnchor.constraint(equalTo: searchContainer.trailingAnchor, constant: -24),
+            searchField.trailingAnchor.constraint(equalTo: settingsButton.leadingAnchor, constant: -24),
             searchField.topAnchor.constraint(equalTo: searchContainer.topAnchor),
-            searchField.bottomAnchor.constraint(equalTo: searchContainer.bottomAnchor)
+            searchField.bottomAnchor.constraint(equalTo: searchContainer.bottomAnchor),
+
+            settingsButton.trailingAnchor.constraint(equalTo: searchContainer.trailingAnchor, constant: -24),
+            settingsButton.centerYAnchor.constraint(equalTo: searchContainer.centerYAnchor)
         ])
+        
+        setupSelectionControls()
+    }
+    
+    private func setupSelectionControls() {
+        guard onSaveSelection != nil else { return }
+        
+        selectionStatusLabel.translatesAutoresizingMaskIntoConstraints = false
+        selectionStatusLabel.textColor = .white
+        selectionStatusLabel.font = .systemFont(ofSize: 24, weight: .medium)
+        selectionStatusLabel.textAlignment = .left
+        selectionStatusLabel.text = "Не выбрано"
+        view.addSubview(selectionStatusLabel)
+        
+        saveButton.translatesAutoresizingMaskIntoConstraints = false
+        saveButton.setTitle("Сохранить", for: .normal)
+        saveButton.titleLabel?.font = .systemFont(ofSize: 26, weight: .semibold)
+        saveButton.setTitleColor(.white, for: .normal)
+        saveButton.setTitleColor(UIColor(white: 1, alpha: 0.5), for: .disabled)
+        saveButton.backgroundColor = UIColor.systemBlue.withAlphaComponent(0.8)
+        saveButton.layer.cornerRadius = 12
+        if #available(tvOS 15.0, *) {
+            var saveConfig = saveButton.configuration ?? UIButton.Configuration.plain()
+            saveConfig.title = saveConfig.title ?? saveButton.title(for: .normal) ?? "Сохранить"
+            saveConfig.baseForegroundColor = saveButton.titleColor(for: .normal)
+            saveConfig.contentInsets = NSDirectionalEdgeInsets(top: 14, leading: 24, bottom: 14, trailing: 24)
+            saveConfig.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
+                var outgoing = incoming
+                outgoing.font = .systemFont(ofSize: 26, weight: .semibold)
+                return outgoing
+            }
+            saveButton.configuration = saveConfig
+        } else {
+            saveButton.contentEdgeInsets = UIEdgeInsets(top: 14, left: 24, bottom: 14, right: 24)
+        }
+        saveButton.addTarget(self, action: #selector(saveSelection), for: .primaryActionTriggered)
+        view.addSubview(saveButton)
+        
+        NSLayoutConstraint.activate([
+            selectionStatusLabel.topAnchor.constraint(equalTo: searchContainer.bottomAnchor, constant: 16),
+            selectionStatusLabel.leadingAnchor.constraint(equalTo: searchContainer.leadingAnchor),
+            
+            saveButton.centerYAnchor.constraint(equalTo: selectionStatusLabel.centerYAnchor),
+            saveButton.trailingAnchor.constraint(equalTo: searchContainer.trailingAnchor),
+        ])
+        
+        updateSelectionUI()
     }
     
     private func setupLoadingIndicator() {
@@ -162,9 +257,10 @@ final class ChatListViewController: UICollectionViewController {
     }
     
     private func configureDataSource() {
-        dataSource = UICollectionViewDiffableDataSource<Section, TG.Chat>(collectionView: collectionView) { collectionView, indexPath, chat in
+        dataSource = UICollectionViewDiffableDataSource<Section, TG.Chat>(collectionView: collectionView) { [weak self] collectionView, indexPath, chat in
             let cell = collectionView.dequeueReusableCell(withReuseIdentifier: "ChatCell", for: indexPath) as! ChatCell
-            cell.configure(with: chat)
+            let isSelected = self?.selectedChatIds.contains(chat.id) ?? false
+            cell.configure(with: chat, selected: isSelected)
             return cell
         }
         
@@ -278,24 +374,91 @@ final class ChatListViewController: UICollectionViewController {
     
     override func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
         guard let chat = dataSource.itemIdentifier(for: indexPath) else { return }
-        
-        if let appDelegate = UIApplication.shared.delegate as? AppDelegate,
-           let existingVC = appDelegate.messagesViewController,
-           existingVC.chatId == chat.id {
-            navigationController?.pushViewController(existingVC, animated: true)
-            return
+        if selectedChatIds.contains(chat.id) {
+            selectedChatIds.remove(chat.id)
+        } else {
+            selectedChatIds.insert(chat.id)
         }
-        
-        let messagesVC = MessagesViewController(chatId: chat.id, client: viewModel.client)
-        if let appDelegate = UIApplication.shared.delegate as? AppDelegate {
-            appDelegate.setMessagesViewController(messagesVC)
-        }
-        navigationController?.pushViewController(messagesVC, animated: true)
+        refreshSelectionMarks(for: [chat.id])
+        updateSelectionUI()
     }
     
     @objc private func searchTextDidChange(_ sender: UITextField) {
         Task { @MainActor [weak self] in
             self?.viewModel.updateSearchQuery(sender.text ?? "")
+        }
+    }
+
+    @objc private func openSettings() {
+        (UIApplication.shared.delegate as? AppDelegate)?.openSettings()
+    }
+    
+    @objc private func saveSelection() {
+        onSaveSelection?(selectedChatIds)
+    }
+    
+    private func applyCurrentSnapshot(animated: Bool) {
+        var snapshot = NSDiffableDataSourceSnapshot<Section, TG.Chat>()
+        snapshot.appendSections([.main])
+        snapshot.appendItems(viewModel.filteredChats, toSection: .main)
+        dataSource.apply(snapshot, animatingDifferences: animated)
+        updateEmptyState(for: viewModel.filteredChats)
+    }
+    
+    private func refreshSelectionMarks(for chatIds: [Int64]? = nil) {
+        var snapshot = dataSource.snapshot()
+        let idsToUpdate = Set(chatIds ?? snapshot.itemIdentifiers.map(\.id))
+        let chatsToUpdate = snapshot.itemIdentifiers.filter { idsToUpdate.contains($0.id) }
+        guard !chatsToUpdate.isEmpty else { return }
+        
+        if #available(tvOS 15.0, *) {
+            snapshot.reconfigureItems(chatsToUpdate)
+        } else {
+            snapshot.reloadItems(chatsToUpdate)
+        }
+        
+        dataSource.apply(snapshot, animatingDifferences: false)
+    }
+    
+    private func updateSelectionUI() {
+        guard onSaveSelection != nil else { return }
+        let count = selectedChatIds.count
+        selectionStatusLabel.text = count == 0 ? "Не выбрано" : "Выбрано: \(count)"
+        saveButton.isEnabled = count > 0
+        saveButton.alpha = count > 0 ? 1.0 : 0.5
+    }
+
+    override func didUpdateFocus(in context: UIFocusUpdateContext, with coordinator: UIFocusAnimationCoordinator) {
+        super.didUpdateFocus(in: context, with: coordinator)
+
+        let next = context.nextFocusedView
+        let prev = context.previouslyFocusedView
+
+        if next === searchField {
+            updateSearchFocus(isFocused: true)
+        } else if prev === searchField {
+            updateSearchFocus(isFocused: false)
+        }
+
+        if next === settingsButton {
+            updateSettingsFocus(isFocused: true)
+        } else if prev === settingsButton {
+            updateSettingsFocus(isFocused: false)
+        }
+    }
+
+    private func updateSearchFocus(isFocused: Bool) {
+        UIView.animate(withDuration: 0.15) {
+            self.searchContainer.backgroundColor = isFocused ? self.searchBackgroundFocused : self.searchBackgroundNormal
+            self.searchContainer.layer.borderWidth = isFocused ? 2 : 0
+            self.searchContainer.layer.borderColor = isFocused ? UIColor.systemBlue.cgColor : UIColor.clear.cgColor
+        }
+    }
+
+    private func updateSettingsFocus(isFocused: Bool) {
+        UIView.animate(withDuration: 0.15) {
+            self.settingsButton.backgroundColor = isFocused ? self.settingsFocusedBackground : .clear
+            self.settingsButton.layer.cornerRadius = 12
         }
     }
     
@@ -415,18 +578,18 @@ final class ChatCell: UICollectionViewCell {
         gradientLayer?.frame = containerView.bounds
     }
     
-    func configure(with chat: TG.Chat) {
+    func configure(with chat: TG.Chat, selected: Bool) {
         titleLabel.text = chat.title
         messageLabel.isHidden = true
         messageLabel.text = nil
         
-        // Avatar initials
         let initials = chat.title.prefix(2).uppercased()
         avatarLabel.text = String(initials)
         
-        // Random avatar color based on chat id
         let hue = CGFloat(abs(chat.id.hashValue) % 360) / 360.0
         avatarView.backgroundColor = UIColor(hue: hue, saturation: 0.5, brightness: 0.7, alpha: 1)
+        
+        updateSelection(selected)
     }
     
     override func didUpdateFocus(in context: UIFocusUpdateContext, with coordinator: UIFocusAnimationCoordinator) {
@@ -462,5 +625,29 @@ final class ChatCell: UICollectionViewCell {
         super.prepareForReuse()
         containerView.transform = .identity
         containerView.layer.shadowOpacity = 0
+    }
+    
+    private func updateSelection(_ isSelected: Bool) {
+        if let mark = containerView.viewWithTag(999) as? UIImageView {
+            mark.isHidden = !isSelected
+            return
+        }
+        
+        let selectionMark = UIImageView(image: UIImage(systemName: "checkmark.circle.fill"))
+        selectionMark.translatesAutoresizingMaskIntoConstraints = false
+        selectionMark.tintColor = UIColor.systemGreen
+        selectionMark.backgroundColor = UIColor(white: 0, alpha: 0.25)
+        selectionMark.layer.cornerRadius = 18
+        selectionMark.clipsToBounds = true
+        selectionMark.tag = 999
+        selectionMark.isHidden = !isSelected
+        containerView.addSubview(selectionMark)
+        
+        NSLayoutConstraint.activate([
+            selectionMark.trailingAnchor.constraint(equalTo: containerView.trailingAnchor, constant: -16),
+            selectionMark.topAnchor.constraint(equalTo: containerView.topAnchor, constant: 16),
+            selectionMark.widthAnchor.constraint(equalToConstant: 36),
+            selectionMark.heightAnchor.constraint(equalToConstant: 36)
+        ])
     }
 }
