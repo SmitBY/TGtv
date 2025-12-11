@@ -17,19 +17,32 @@ final class HomeViewController: UIViewController, AVPlayerViewControllerDelegate
     private var isStreamFailed = false
     
     private var collectionView: UICollectionView!
-    private var dataSource: UICollectionViewDiffableDataSource<Int, HomeVideoItem>!
+    private var dataSource: UICollectionViewDiffableDataSource<Int64, HomeVideoItem>!
     private let emptyLabel = UILabel()
     private var backgroundImageView: UIImageView!
     private var playerObservers: [NSKeyValueObservation] = []
     private var playbackStallObserver: NSObjectProtocol?
     private let playbackProgressLabel = UILabel()
     private var playbackProgressWorkItem: DispatchWorkItem?
+    private var topMenuControl: UISegmentedControl?
     
     // Полноэкранный оверлей загрузки
     private var fullscreenLoadingView: UIView?
     private var fullscreenSpinner: UIActivityIndicatorView?
     private var fullscreenProgressLabel: UILabel?
+    private var fullscreenCancelButton: UIButton?
     private var progressWatchTask: Task<Void, Never>?
+    private var currentSelectionId: String?
+    private var storedLeftBarButtonItem: UIBarButtonItem?
+    private var storedRightBarButtonItem: UIBarButtonItem?
+    private var foregroundObserver: NSObjectProtocol?
+    private var backgroundDownloadTask: Task<Void, Never>?
+    private var currentLoadingFileId: Int?
+    private var loadingOverlayMessage: String?
+    private var suppressLoadingOverlay = false
+    private var isFullscreenLoadingVisible: Bool {
+        fullscreenLoadingView?.isHidden == false
+    }
     
     init(client: TDLibClient, selectedChatsStore: SelectedChatsStore, openSelection: @escaping () -> Void, openSettings: @escaping () -> Void) {
         self.viewModel = HomeViewModel(client: client, store: selectedChatsStore)
@@ -46,11 +59,19 @@ final class HomeViewController: UIViewController, AVPlayerViewControllerDelegate
     override func viewDidLoad() {
         super.viewDidLoad()
         setupBackground()
+        setupTopMenuBar()
         setupNavigation()
         setupCollectionView()
         setupEmptyLabel()
         setupLoading()
         observeFileUpdates()
+        foregroundObserver = NotificationCenter.default.addObserver(
+            forName: UIScene.willEnterForegroundNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.handleReturnFromBackground()
+        }
         applySnapshot(sections: [])
     }
     
@@ -62,14 +83,24 @@ final class HomeViewController: UIViewController, AVPlayerViewControllerDelegate
         if let stall = playbackStallObserver {
             NotificationCenter.default.removeObserver(stall)
         }
+        if let fg = foregroundObserver {
+            NotificationCenter.default.removeObserver(fg)
+        }
         progressWatchTask?.cancel()
     }
     
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        navigationController?.setNavigationBarHidden(true, animated: false)
+        topMenuControl?.selectedSegmentIndex = 0
         Task { @MainActor in
             await reloadData()
         }
+    }
+
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        navigationController?.setNavigationBarHidden(false, animated: false)
     }
     
     private func setupBackground() {
@@ -105,9 +136,34 @@ final class HomeViewController: UIViewController, AVPlayerViewControllerDelegate
     }
     
     private func setupNavigation() {
-        title = "Главная"
-        navigationItem.leftBarButtonItem = UIBarButtonItem(title: "Список чатов", style: .plain, target: self, action: #selector(openChatSelection))
-        navigationItem.rightBarButtonItem = UIBarButtonItem(title: "Настройки", style: .plain, target: self, action: #selector(openSettings))
+        title = ""
+        navigationItem.leftBarButtonItem = nil
+        navigationItem.rightBarButtonItem = nil
+    }
+
+    private func setupTopMenuBar() {
+        let control = UISegmentedControl(items: ["Главная", "Список", "Настройки"])
+        control.translatesAutoresizingMaskIntoConstraints = false
+        control.selectedSegmentIndex = 0
+        control.backgroundColor = UIColor(white: 0, alpha: 0.55)
+        control.selectedSegmentTintColor = UIColor.white
+        control.addTarget(self, action: #selector(topMenuChanged(_:)), for: .valueChanged)
+        control.setTitleTextAttributes([
+            .foregroundColor: UIColor.black,
+            .font: UIFont.systemFont(ofSize: 30, weight: .regular)
+        ], for: .normal)
+        control.setTitleTextAttributes([
+            .foregroundColor: UIColor.black,
+            .font: UIFont.systemFont(ofSize: 32, weight: .semibold)
+        ], for: .selected)
+        view.addSubview(control)
+        NSLayoutConstraint.activate([
+            control.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 10),
+            control.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 80),
+            control.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -80),
+            control.heightAnchor.constraint(equalToConstant: 80)
+        ])
+        topMenuControl = control
     }
     
     private func setupCollectionView() {
@@ -119,8 +175,9 @@ final class HomeViewController: UIViewController, AVPlayerViewControllerDelegate
         collectionView.delegate = self
         view.addSubview(collectionView)
         
+        let topAnchor = (topMenuControl?.bottomAnchor).map { $0 } ?? view.safeAreaLayoutGuide.topAnchor
         NSLayoutConstraint.activate([
-            collectionView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 10),
+            collectionView.topAnchor.constraint(equalTo: topAnchor, constant: 20),
             collectionView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 40),
             collectionView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -40),
             collectionView.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -40)
@@ -129,7 +186,7 @@ final class HomeViewController: UIViewController, AVPlayerViewControllerDelegate
         collectionView.register(VideoCell.self, forCellWithReuseIdentifier: "VideoCell")
         collectionView.register(ChatHeaderView.self, forSupplementaryViewOfKind: UICollectionView.elementKindSectionHeader, withReuseIdentifier: "Header")
         
-        dataSource = UICollectionViewDiffableDataSource<Int, HomeVideoItem>(collectionView: collectionView) { collectionView, indexPath, item in
+        dataSource = UICollectionViewDiffableDataSource<Int64, HomeVideoItem>(collectionView: collectionView) { collectionView, indexPath, item in
             let cell = collectionView.dequeueReusableCell(withReuseIdentifier: "VideoCell", for: indexPath) as! VideoCell
             cell.configure(
                 title: item.title,
@@ -174,9 +231,10 @@ final class HomeViewController: UIViewController, AVPlayerViewControllerDelegate
         playbackProgressLabel.alpha = 0
         playbackProgressLabel.numberOfLines = 1
         view.addSubview(playbackProgressLabel)
+        let topAnchor = (topMenuControl?.bottomAnchor).map { $0 } ?? view.safeAreaLayoutGuide.topAnchor
         NSLayoutConstraint.activate([
             playbackProgressLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            playbackProgressLabel.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 20)
+            playbackProgressLabel.topAnchor.constraint(equalTo: topAnchor, constant: 20)
         ])
     }
     
@@ -201,13 +259,13 @@ final class HomeViewController: UIViewController, AVPlayerViewControllerDelegate
     }
     
     private func applySnapshot(sections: [HomeSection]) {
-        var snapshot = NSDiffableDataSourceSnapshot<Int, HomeVideoItem>()
-        for (idx, section) in sections.enumerated() {
-            snapshot.appendSections([idx])
+        var snapshot = NSDiffableDataSourceSnapshot<Int64, HomeVideoItem>()
+        for section in sections {
+            snapshot.appendSections([section.chatId])
             if section.videos.isEmpty {
                 snapshot.appendItems(
                     [HomeVideoItem(
-                        id: Int64(idx),
+                        id: section.chatId,
                         title: "Нет видео",
                         chatId: section.chatId,
                         thumbnailPath: nil,
@@ -220,10 +278,10 @@ final class HomeViewController: UIViewController, AVPlayerViewControllerDelegate
                         downloadedSize: 0,
                         isDownloadingCompleted: false
                     )],
-                    toSection: idx
+                    toSection: section.chatId
                 )
             } else {
-                snapshot.appendItems(section.videos, toSection: idx)
+                snapshot.appendItems(section.videos, toSection: section.chatId)
             }
         }
         dataSource.apply(snapshot, animatingDifferences: true)
@@ -251,10 +309,49 @@ final class HomeViewController: UIViewController, AVPlayerViewControllerDelegate
     
     private func setLoading(_ loading: Bool) { }
     
+    @objc private func cancelLoadingOverlay() {
+        progressWatchTask?.cancel()
+        progressWatchTask = nil
+        streamingCoordinator?.stop()
+        streamingCoordinator = nil
+        currentSelectionId = nil
+        suppressLoadingOverlay = true
+        setLoading(false)
+        hideFullscreenLoading(restoreNavigation: true)
+    }
+
+    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        // На экране загрузки перехватываем Esc/Menu, чтобы закрыть оверлей и остаться на главном экране
+        if isFullscreenLoadingVisible, presses.contains(where: { $0.type == .menu || $0.key?.keyCode == .keyboardEscape }) {
+            cancelLoadingOverlay()
+            return
+        }
+        super.pressesBegan(presses, with: event)
+    }
+
     private func observeFileUpdates() {
         fileUpdateObserver = NotificationCenter.default.addObserver(forName: .tgFileUpdated, object: nil, queue: .main) { [weak self] note in
-            guard let file = note.object as? TDLibKit.File else { return }
-            self?.streamingCoordinator?.handleFileUpdate(file)
+            guard let self, let file = note.object as? TDLibKit.File else { return }
+            streamingCoordinator?.handleFileUpdate(file)
+
+            let isCurrent = file.id == (currentLoadingFileId ?? currentPlaybackFileId ?? -1)
+            guard isCurrent else { return }
+
+            let local = file.local
+            let downloaded = max(Int64(local.downloadedSize), Int64(local.downloadedPrefixSize))
+            let expected = max(Int64(file.size), downloaded)
+            let progress = expected > 0 ? Double(downloaded) / Double(expected) : nil
+
+            logDownloadProgress(
+                fileId: file.id,
+                downloaded: downloaded,
+                expected: expected,
+                label: "file-update"
+            )
+
+            if isFullscreenLoadingVisible {
+                showFullscreenLoading(progress: progress, message: loadingOverlayMessage)
+            }
         }
     }
     
@@ -262,6 +359,18 @@ final class HomeViewController: UIViewController, AVPlayerViewControllerDelegate
         setLoading(true)
         await viewModel.refresh()
         setLoading(false)
+        // #region agent log
+        agentLog(
+            hypothesisId: "H-sections",
+            location: "HomeViewController:reloadData",
+            message: "sections after refresh",
+            data: [
+                "count": viewModel.sections.count,
+                "titles": viewModel.sections.map { $0.title },
+                "chatIds": viewModel.sections.map { $0.chatId }
+            ]
+        )
+        // #endregion
         applySnapshot(sections: viewModel.sections)
         updateEmptyState()
     }
@@ -273,6 +382,49 @@ final class HomeViewController: UIViewController, AVPlayerViewControllerDelegate
     @objc private func openSettings() {
         openSettingsAction()
     }
+
+    @objc private func topMenuChanged(_ sender: UISegmentedControl) {
+        switch sender.selectedSegmentIndex {
+        case 1:
+            openSelection()
+        case 2:
+            openSettingsAction()
+        default:
+            break
+        }
+    }
+
+    // #region agent log
+    private func agentLog(
+        hypothesisId: String,
+        location: String,
+        message: String,
+        data: [String: Any] = [:]
+    ) {
+        let payload: [String: Any] = [
+            "sessionId": "debug-session",
+            "runId": "dup-names-pre2",
+            "hypothesisId": hypothesisId,
+            "location": location,
+            "message": message,
+            "data": data,
+            "timestamp": Int(Date().timeIntervalSince1970 * 1000)
+        ]
+        guard let jsonData = try? JSONSerialization.data(withJSONObject: payload),
+              var line = String(data: jsonData, encoding: .utf8) else { return }
+        line.append("\n")
+        let url = URL(fileURLWithPath: "/Users/dmitriy/Documents/Projects/TGtv/.cursor/debug.log")
+        if let handle = try? FileHandle(forWritingTo: url) {
+            handle.seekToEndOfFile()
+            if let data = line.data(using: .utf8) {
+                handle.write(data)
+            }
+            try? handle.close()
+        } else {
+            try? line.write(to: url, atomically: true, encoding: .utf8)
+        }
+    }
+    // #endregion
 }
 
 // MARK: - Cells & Headers
@@ -322,12 +474,35 @@ final class VideoCell: UICollectionViewCell {
         }
         
         placeholderLabel.isHidden = false
+        
+        // #region agent log
+        cellLog(
+            hypothesisId: "H9",
+            location: "VideoCell.configure",
+            message: "cell title set",
+            data: [
+                "title": title,
+                "instance": Unmanaged.passUnretained(self).toOpaque().debugDescription
+            ]
+        )
+        // #endregion
     }
     
     override func prepareForReuse() {
         super.prepareForReuse()
         thumbnailView.image = nil
         placeholderLabel.isHidden = true
+        // #region agent log
+        cellLog(
+            hypothesisId: "H10",
+            location: "VideoCell.prepareForReuse",
+            message: "cell reused",
+            data: [
+                "title": titleLabel.text ?? "",
+                "instance": Unmanaged.passUnretained(self).toOpaque().debugDescription
+            ]
+        )
+        // #endregion
     }
     
     private func setupUI() {
@@ -378,6 +553,39 @@ final class VideoCell: UICollectionViewCell {
     }
 }
 
+// MARK: - Cell logging
+private extension VideoCell {
+    func cellLog(
+        hypothesisId: String,
+        location: String,
+        message: String,
+        data: [String: Any] = [:]
+    ) {
+        let payload: [String: Any] = [
+            "sessionId": "debug-session",
+            "runId": "dup-names-pre2",
+            "hypothesisId": hypothesisId,
+            "location": location,
+            "message": message,
+            "data": data,
+            "timestamp": Int(Date().timeIntervalSince1970 * 1000)
+        ]
+        guard let jsonData = try? JSONSerialization.data(withJSONObject: payload),
+              var line = String(data: jsonData, encoding: .utf8) else { return }
+        line.append("\n")
+        let url = URL(fileURLWithPath: "/Users/dmitriy/Documents/Projects/TGtv/.cursor/debug.log")
+        if let handle = try? FileHandle(forWritingTo: url) {
+            handle.seekToEndOfFile()
+            if let data = line.data(using: .utf8) {
+                handle.write(data)
+            }
+            try? handle.close()
+        } else {
+            try? line.write(to: url, atomically: true, encoding: .utf8)
+        }
+    }
+}
+
 // MARK: - Collection Delegate
 
 extension HomeViewController: UICollectionViewDelegate {
@@ -387,19 +595,26 @@ extension HomeViewController: UICollectionViewDelegate {
     }
     
     private func playVideo(_ item: HomeVideoItem) {
+        let selectionId = UUID().uuidString
+        currentSelectionId = selectionId
+        suppressLoadingOverlay = false
+        backgroundDownloadTask?.cancel()
+        backgroundDownloadTask = nil
+        loadingOverlayMessage = nil
         setLoading(true)
         showFullscreenLoading(progress: nil)
         progressWatchTask?.cancel()
         
         progressWatchTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            
             guard var info = await viewModel.fetchLatestVideoInfo(for: item) else {
                 self.setLoading(false)
                 self.hideFullscreenLoading()
                 self.showAlert(title: "Ошибка", message: "Не удалось получить данные видео.")
                 return
             }
+
+            currentLoadingFileId = info.fileId
             
             // Подтягиваем хвост (moov atom) при неполной загрузке, не блокируя старт
             if !info.isDownloadingCompleted, info.expectedSize > 0 {
@@ -431,15 +646,15 @@ extension HomeViewController: UICollectionViewDelegate {
                         synchronous: false
                     )
                 }
-                await self.pollPrefixAndPlay(item: item)
+                await self.pollPrefixAndPlay(item: item, selectionId: selectionId)
                 return
             }
             
-            await self.startPlayback(with: info, fallbackItem: item)
+            await self.startPlayback(with: info, fallbackItem: item, selectionId: selectionId)
         }
     }
 
-    private func pollPrefixAndPlay(item: HomeVideoItem) async {
+    private func pollPrefixAndPlay(item: HomeVideoItem, selectionId: String) async {
         var attempts = 0
         while !Task.isCancelled {
             attempts += 1
@@ -468,7 +683,7 @@ extension HomeViewController: UICollectionViewDelegate {
                 if info.downloadedSize > 0 || info.isDownloadingCompleted {
                     await MainActor.run {
                         _ = Task { [weak self] in
-                            await self?.startPlayback(with: info, fallbackItem: item)
+                            await self?.startPlayback(with: info, fallbackItem: item, selectionId: selectionId)
                         }
                     }
                     return
@@ -485,16 +700,18 @@ extension HomeViewController: UICollectionViewDelegate {
     }
 
     @MainActor
-    private func startPlayback(with info: TG.MessageMedia.VideoInfo, fallbackItem: HomeVideoItem) async {
+    private func startPlayback(with info: TG.MessageMedia.VideoInfo, fallbackItem: HomeVideoItem, selectionId: String?) async {
         var info = info
         setupAudioSessionIfNeeded()
         
         _ = try? FileManager.default.attributesOfItem(atPath: info.path)
 
+        if let selectionId, selectionId != currentSelectionId {
+            return
+        }
+
         // Если файл уже загружен полностью — обычное воспроизведение
         if info.isDownloadingCompleted && FileManager.default.fileExists(atPath: info.path) {
-            self.setLoading(false)
-            self.hideFullscreenLoading()
             currentPlaybackFileId = info.fileId
             currentPlaybackMimeType = info.mimeType
             let playableURL = await ensurePlayableLocalURL(for: info) ?? URL(fileURLWithPath: info.path)
@@ -505,7 +722,10 @@ extension HomeViewController: UICollectionViewDelegate {
             player.automaticallyWaitsToMinimizeStalling = false
             player.volume = 1.0
             player.isMuted = false
-            self.presentOrReusePlayer(player: player, item: playerItem)
+            self.presentOrReusePlayer(player: player, item: playerItem, selectionId: selectionId) { [weak self] in
+                self?.setLoading(false)
+                self?.hideFullscreenLoading()
+            }
             return
         }
         
@@ -526,14 +746,54 @@ extension HomeViewController: UICollectionViewDelegate {
             return
         }
         
-        // Если префикс слишком мал (moov в конце) — потоковое воспроизведение недоступно, сразу уходим в полную загрузку
+        // Если префикс слишком мал (moov в конце) или прогресс меньше 5% большого файла — считаем нестримовым, грузим полностью
         let minPrefixForStreaming: Int64 = 2_000_000
-        if info.expectedSize > 0, info.downloadedSize < minPrefixForStreaming, !info.isDownloadingCompleted {
-            self.setLoading(false)
-            self.hideFullscreenLoading()
-            self.showAlert(title: "Идёт полная загрузка", message: "Этот файл не поддерживает потоковое воспроизведение (moov в конце). Воспроизведение начнётся после полной загрузки.")
-            Task {
-                _ = await downloadFullFileIfNeeded(fileId: info.fileId)
+        let dynamicMinForLargeFile: Int64 = info.expectedSize > 0 ? max(minPrefixForStreaming, info.expectedSize / 20) : minPrefixForStreaming // 5% от файла
+        if info.expectedSize > 0,
+           info.downloadedSize < dynamicMinForLargeFile,
+           !info.isDownloadingCompleted {
+            self.showFullscreenLoading(progress: Double(info.downloadedSize) / Double(info.expectedSize), message: "Это видео не поддерживает потоковое воспроизведение. Идёт загрузка...")
+            backgroundDownloadTask?.cancel()
+            backgroundDownloadTask = Task { [weak self] in
+                guard let self else { return }
+                defer { backgroundDownloadTask = nil }
+                let full = await self.downloadFullFileIfNeeded(
+                    fileId: info.fileId,
+                    progressHandler: { progress in
+                        await MainActor.run {
+                            self.showFullscreenLoading(
+                                progress: progress,
+                                message: "Это видео не поддерживает потоковое воспроизведение. Идёт загрузка..."
+                            )
+                        }
+                    }
+                )
+                guard let full else {
+                    await MainActor.run {
+                        self.setLoading(false)
+                        // Если загрузка отменена пользователем/переключением — просто выходим без алерта
+                        self.hideFullscreenLoading()
+                    }
+                    return
+                }
+                if selectionId != self.currentSelectionId {
+                    return
+                }
+                let updatedInfo = TG.MessageMedia.VideoInfo(
+                    path: full.local.path,
+                    fileId: full.id,
+                    expectedSize: Int64(full.size),
+                    downloadedSize: max(Int64(full.local.downloadedSize), Int64(full.local.downloadedPrefixSize)),
+                    isDownloadingCompleted: full.local.isDownloadingCompleted,
+                    mimeType: info.mimeType
+                )
+                await MainActor.run {
+                    self.showFullscreenLoading(
+                        progress: 1,
+                        message: "Загрузка завершена. Запуск плеера..."
+                    )
+                }
+                await self.startPlayback(with: updatedInfo, fallbackItem: fallbackItem, selectionId: selectionId)
             }
             return
         }
@@ -582,14 +842,18 @@ extension HomeViewController: UICollectionViewDelegate {
         player.volume = 1.0
         player.isMuted = false
         playerItem.preferredForwardBufferDuration = 0
-        self.presentOrReusePlayer(player: player, item: playerItem)
-        self.setLoading(false)
-        self.hideFullscreenLoading()
+        self.presentOrReusePlayer(player: player, item: playerItem, selectionId: selectionId) { [weak self] in
+            self?.setLoading(false)
+            self?.hideFullscreenLoading()
+        }
         
         // Фон: догружаем полностью, проверяем аудио и подменяем item при необходимости
         Task { [weak self, weak player] in
             guard let self else { return }
             guard let full = await downloadFullFileIfNeeded(fileId: info.fileId) else { return }
+            if selectionId != self.currentSelectionId {
+                return
+            }
             let updatedInfo = TG.MessageMedia.VideoInfo(
                 path: full.local.path,
                 fileId: full.id,
@@ -619,11 +883,17 @@ extension HomeViewController: UICollectionViewDelegate {
         }
     }
 
-    private func presentOrReusePlayer(player: AVPlayer, item: AVPlayerItem) {
+    private func presentOrReusePlayer(player: AVPlayer, item: AVPlayerItem, selectionId: String?, onPresented: (() -> Void)? = nil) {
+        // защита от устаревшего выбора
+        if let selectionId, selectionId != currentSelectionId {
+            return
+        }
+        
         if let currentVC = presentedViewController as? AVPlayerViewController {
             currentVC.player = player
             attachPlaybackObservers(player: player, item: item, controller: currentVC)
             player.play()
+            onPresented?()
             return
         }
         let vc = AVPlayerViewController()
@@ -632,7 +902,12 @@ extension HomeViewController: UICollectionViewDelegate {
         vc.delegate = self
         present(vc, animated: true) { [weak self, weak vc] in
             guard let self, let vc else { return }
+            // повторная проверка выбора
+            if let selectionId, selectionId != self.currentSelectionId {
+                return
+            }
             self.attachPlaybackObservers(player: player, item: item, controller: vc)
+            onPresented?()
         }
     }
     
@@ -643,6 +918,8 @@ extension HomeViewController: UICollectionViewDelegate {
         currentPlaybackFileId = nil
         currentPlaybackMimeType = nil
         isRecoveringPlayback = false
+        hideFullscreenLoading()
+        restoreNavigationItems()
     }
     
     private func showAlert(title: String, message: String) {
@@ -653,7 +930,22 @@ extension HomeViewController: UICollectionViewDelegate {
         present(alert, animated: true)
     }
     
-    private func showFullscreenLoading(progress: Double?) {
+    private func handleReturnFromBackground() {
+        progressWatchTask?.cancel()
+        progressWatchTask = nil
+        streamingCoordinator?.stop()
+        streamingCoordinator = nil
+        currentSelectionId = nil
+        suppressLoadingOverlay = true
+        setLoading(false)
+        hideFullscreenLoading()
+    }
+
+    private func showFullscreenLoading(progress: Double?, message: String? = nil) {
+        if let message {
+            loadingOverlayMessage = message
+        }
+        if suppressLoadingOverlay { return }
         if fullscreenLoadingView == nil {
             let overlay = UIView()
             overlay.translatesAutoresizingMaskIntoConstraints = false
@@ -689,9 +981,16 @@ extension HomeViewController: UICollectionViewDelegate {
             label.font = .systemFont(ofSize: 22, weight: .medium)
             label.textAlignment = .center
             label.numberOfLines = 1
+
+            let cancelButton = UIButton(type: .system)
+            cancelButton.translatesAutoresizingMaskIntoConstraints = false
+            cancelButton.setTitle("Назад", for: .normal)
+            cancelButton.titleLabel?.font = .systemFont(ofSize: 22, weight: .semibold)
+            cancelButton.addTarget(self, action: #selector(cancelLoadingOverlay), for: .primaryActionTriggered)
             
             overlay.addSubview(spinner)
             overlay.addSubview(label)
+            overlay.addSubview(cancelButton)
             view.addSubview(overlay)
             
             NSLayoutConstraint.activate([
@@ -704,12 +1003,16 @@ extension HomeViewController: UICollectionViewDelegate {
                 spinner.centerYAnchor.constraint(equalTo: overlay.centerYAnchor, constant: -12),
                 
                 label.centerXAnchor.constraint(equalTo: overlay.centerXAnchor),
-                label.topAnchor.constraint(equalTo: spinner.bottomAnchor, constant: 12)
+                label.topAnchor.constraint(equalTo: spinner.bottomAnchor, constant: 12),
+
+                cancelButton.topAnchor.constraint(equalTo: overlay.safeAreaLayoutGuide.topAnchor, constant: 20),
+                cancelButton.leadingAnchor.constraint(equalTo: overlay.leadingAnchor, constant: 30)
             ])
             
             fullscreenLoadingView = overlay
             fullscreenSpinner = spinner
             fullscreenProgressLabel = label
+            fullscreenCancelButton = cancelButton
         }
         
         if let overlay = fullscreenLoadingView {
@@ -717,18 +1020,46 @@ extension HomeViewController: UICollectionViewDelegate {
             overlay.isHidden = false
             fullscreenSpinner?.startAnimating()
         }
+
+        // скрываем кнопки навигации на время загрузки
+        if storedLeftBarButtonItem == nil { storedLeftBarButtonItem = navigationItem.leftBarButtonItem }
+        if storedRightBarButtonItem == nil { storedRightBarButtonItem = navigationItem.rightBarButtonItem }
+        navigationItem.leftBarButtonItem = nil
+        navigationItem.rightBarButtonItem = nil
         
-        if let progress, let label = fullscreenProgressLabel {
+        guard let label = fullscreenProgressLabel else { return }
+        let progressText: String? = {
+            guard let progress else { return nil }
             let p = max(0, min(1, progress))
-            label.text = String(format: "Загружено %.0f%%", p * 100)
+            return String(format: "Загружено %.0f%%", p * 100)
+        }()
+        if let msg = message, let progressText {
+            label.text = "\(msg)\n\(progressText)"
+        } else if let msg = message {
+            label.text = msg
+        } else if let progressText {
+            label.text = progressText
         } else {
-            fullscreenProgressLabel?.text = "Загрузка..."
+            label.text = "Загрузка..."
         }
+        label.numberOfLines = 0
     }
     
-    private func hideFullscreenLoading() {
+    private func hideFullscreenLoading(restoreNavigation: Bool = true) {
         fullscreenSpinner?.stopAnimating()
         fullscreenLoadingView?.isHidden = true
+        loadingOverlayMessage = nil
+        if restoreNavigation {
+            currentLoadingFileId = nil
+            restoreNavigationItems()
+        }
+    }
+
+    private func restoreNavigationItems() {
+        navigationItem.leftBarButtonItem = storedLeftBarButtonItem
+        navigationItem.rightBarButtonItem = storedRightBarButtonItem
+        storedLeftBarButtonItem = nil
+        storedRightBarButtonItem = nil
     }
     
     private func showDownloadProgress(_ progress: Double) {
@@ -888,6 +1219,17 @@ extension HomeViewController: UICollectionViewDelegate {
             return url
         }
 
+        // Если нет аудиодорожек — играем как есть (без тяжелых операций)
+        if check.description == "none" {
+            return url
+        }
+
+        // Ограничиваем дорогостоящие операции для больших файлов (>300 МБ)
+        let sizeLimitForRewrite: Int64 = 300 * 1024 * 1024
+        if info.expectedSize > sizeLimitForRewrite || info.expectedSize == 0 {
+            return url
+        }
+
         // Если дорожка не видна — попробуем пересобрать контейнер (passthrough) и перечитать.
         if let repaired = await rewriteContainerPassthrough(asset: asset, fileId: info.fileId) {
             let repairedAsset = AVURLAsset(url: repaired)
@@ -911,7 +1253,10 @@ extension HomeViewController: UICollectionViewDelegate {
         return nil
     }
 
-    private func downloadFullFileIfNeeded(fileId: Int) async -> TDLibKit.File? {
+    private func downloadFullFileIfNeeded(
+        fileId: Int,
+        progressHandler: ((Double) async -> Void)? = nil
+    ) async -> TDLibKit.File? {
         do {
             var file = try await viewModel.client.downloadFile(
                 fileId: fileId,
@@ -924,12 +1269,17 @@ extension HomeViewController: UICollectionViewDelegate {
             // проверяем прогресс, чтобы потом можно было перекодировать звук.
             var attempts = 0
             while !file.local.isDownloadingCompleted && !Task.isCancelled && attempts < 120 {
+                let downloaded = max(Int64(file.local.downloadedSize), Int64(file.local.downloadedPrefixSize))
                 logDownloadProgress(
                     fileId: fileId,
-                    downloaded: max(Int64(file.local.downloadedSize), Int64(file.local.downloadedPrefixSize)),
+                    downloaded: downloaded,
                     expected: Int64(file.size),
                     label: "full-download"
                 )
+                if let progressHandler {
+                    let percent = file.size > 0 ? Double(downloaded) / Double(file.size) : 0
+                    await progressHandler(percent)
+                }
                 try await Task.sleep(nanoseconds: 1_000_000_000) // 1 c
                 file = try await viewModel.client.getFile(fileId: fileId)
                 attempts += 1
@@ -940,7 +1290,17 @@ extension HomeViewController: UICollectionViewDelegate {
                 expected: Int64(file.size),
                 label: file.local.isDownloadingCompleted ? "full-download-complete" : "full-download-timeout"
             )
-            return file.local.isDownloadingCompleted ? file : nil
+            if let progressHandler {
+                await progressHandler(1)
+            }
+            if file.local.isDownloadingCompleted {
+                return file
+            } else {
+                return nil
+            }
+        } catch is CancellationError {
+            // Отмена — нормальный кейс при переключении видео. Не показываем ошибку.
+            return nil
         } catch {
             return nil
         }
@@ -1132,6 +1492,7 @@ extension HomeViewController: UICollectionViewDelegate {
 
 final class ChatHeaderView: UICollectionReusableView {
     private let titleLabel = UILabel()
+    private var boundChatId: Int64?
     
     override init(frame: CGRect) {
         super.init(frame: frame)

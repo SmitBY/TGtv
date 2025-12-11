@@ -59,7 +59,6 @@ final class HomeViewModel: ObservableObject {
                 print("HomeViewModel: не удалось получить чат \(chatId): \(error)")
             }
         }
-        
         sections = newSections
         isLoading = false
     }

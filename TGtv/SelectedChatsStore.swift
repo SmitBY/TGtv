@@ -20,4 +20,9 @@ final class SelectedChatsStore {
     func markCompleted() {
         defaults.set(true, forKey: completedKey)
     }
+
+    func clear() {
+        defaults.removeObject(forKey: idsKey)
+        defaults.removeObject(forKey: completedKey)
+    }
 }

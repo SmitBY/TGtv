@@ -1190,22 +1190,25 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
     @objc
     func openSettings() {
-        guard let presenter = topViewController() else {
-            print("AppDelegate: Не найден контроллер для показа настроек")
+        guard let nav = navigationController else {
+            print("AppDelegate: Нет navigationController для показа настроек")
             return
         }
-        
-        let alert = UIAlertController(title: "Настройки", message: nil, preferredStyle: .alert)
-        let logoutAction = UIAlertAction(title: "Выйти из аккаунта", style: .destructive) { [weak self] _ in
-            self?.logoutFromMenu()
-        }
-        alert.addAction(logoutAction)
-        alert.addAction(UIAlertAction(title: "Отмена", style: .cancel))
-        
-        presenter.present(alert, animated: true)
+        let settingsVC = SettingsViewController()
+        nav.pushViewController(settingsVC, animated: true)
     }
 
-    private func logoutFromMenu() {
+    func openChatSelectionFromMenu(resetToRoot: Bool = true) {
+        guard let client else { return }
+        guard let nav = navigationController else { return }
+        let selectionVC = makeChatSelectionController(viewModel: chatListViewModel ?? ChatListViewModel(client: client))
+        if resetToRoot {
+            nav.popToRootViewController(animated: false)
+        }
+        nav.pushViewController(selectionVC, animated: true)
+    }
+
+    func logoutFromMenu() {
         guard let authService else {
             print("AppDelegate: authService отсутствует, выход невозможен")
             return
@@ -1213,6 +1216,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         
         Task {
             await authService.logout()
+            await MainActor.run { [weak self] in
+                self?.selectedChatsStore.clear()
+            }
         }
     }
     
@@ -1320,10 +1326,22 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             viewModel: viewModel,
             selectedChats: Set(selectedChatsStore.load()),
             onSaveSelection: { [weak self] ids in
-                guard let self, let nav = self.navigationController else { return }
+                guard let self else { return }
+                guard !ids.isEmpty else {
+                    self.selectedChatsStore.clear()
+                    return
+                }
+                
+                let wasCompleted = self.selectedChatsStore.hasCompletedSelection
                 self.selectedChatsStore.save(ids: Array(ids))
-                self.selectedChatsStore.markCompleted()
-                nav.setViewControllers([self.makeHomeController()], animated: true)
+                
+                if !wasCompleted {
+                    self.selectedChatsStore.markCompleted()
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self, let nav = self.navigationController else { return }
+                        nav.setViewControllers([self.makeHomeController()], animated: true)
+                    }
+                }
             }
         )
         return vc
