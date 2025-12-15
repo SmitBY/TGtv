@@ -7,19 +7,30 @@ final class ChatListViewController: UICollectionViewController {
     }
     
     private let viewModel: ChatListViewModel
+    private let onSaveSelection: ((Set<Int64>) -> Void)?
+    private var selectedChatIds: Set<Int64>
     private var cancellables = Set<AnyCancellable>()
+    private var topMenuControl: UISegmentedControl?
+    private var focusGuideDownToSearch: UIFocusGuide?
+    private var focusGuideUpToMenu: UIFocusGuide?
+    private var pendingMenuFocus = false
     private let loadingIndicator = UIActivityIndicatorView(style: .large)
     private let progressLabel = UILabel()
     private let errorLabel = UILabel()
     private let searchContainer = UIVisualEffectView(effect: UIBlurEffect(style: .dark))
     private let searchField = UITextField()
+    private let selectionStatusLabel = UILabel()
+    private let searchBackgroundNormal = UIColor(white: 0.12, alpha: 0.9)
+    private let searchBackgroundFocused = UIColor(white: 0.2, alpha: 0.95)
     private var dataSource: UICollectionViewDiffableDataSource<Section, TG.Chat>!
     
     // tvOS safe area insets (Apple HIG: 60pt top/bottom, 80pt sides)
     private let tvSafeInsets = UIEdgeInsets(top: 60, left: 80, bottom: 60, right: 80)
     
-    init(viewModel: ChatListViewModel) {
+    init(viewModel: ChatListViewModel, selectedChats: Set<Int64> = [], onSaveSelection: ((Set<Int64>) -> Void)? = nil) {
         self.viewModel = viewModel
+        self.selectedChatIds = selectedChats
+        self.onSaveSelection = onSaveSelection
         super.init(collectionViewLayout: Self.createLayout())
     }
     
@@ -51,11 +62,23 @@ final class ChatListViewController: UICollectionViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         setupBackground()
+        setupTopMenuBar()
         setupSearchBar()
         setupCollectionView()
         setupLoadingIndicator()
         configureDataSource()
         setupBindings()
+    }
+
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        navigationController?.setNavigationBarHidden(true, animated: false)
+        topMenuControl?.selectedSegmentIndex = 1
+    }
+
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        navigationController?.setNavigationBarHidden(false, animated: false)
     }
     
     private func setupBackground() {
@@ -73,16 +96,45 @@ final class ChatListViewController: UICollectionViewController {
     private func setupCollectionView() {
         collectionView.register(ChatCell.self, forCellWithReuseIdentifier: "ChatCell")
         collectionView.backgroundColor = .clear
-        collectionView.contentInset.top = 120
+        collectionView.contentInset.top = 220
         collectionView.scrollIndicatorInsets = collectionView.contentInset
         collectionView.remembersLastFocusedIndexPath = true
         collectionView.clipsToBounds = false
+        
+        navigationItem.title = ""
+    }
+
+    private func setupTopMenuBar() {
+        let control = UISegmentedControl(items: ["Главная", "Список", "Настройки"])
+        control.translatesAutoresizingMaskIntoConstraints = false
+        control.selectedSegmentIndex = 1
+        control.backgroundColor = UIColor(white: 0, alpha: 0.55)
+        control.selectedSegmentTintColor = UIColor.white
+        control.addTarget(self, action: #selector(topMenuChanged(_:)), for: .valueChanged)
+        control.setTitleTextAttributes([
+            .foregroundColor: UIColor.black,
+            .font: UIFont.systemFont(ofSize: 30, weight: .regular)
+        ], for: .normal)
+        control.setTitleTextAttributes([
+            .foregroundColor: UIColor.black,
+            .font: UIFont.systemFont(ofSize: 32, weight: .semibold)
+        ], for: .selected)
+        view.addSubview(control)
+        NSLayoutConstraint.activate([
+            control.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 10),
+            control.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: tvSafeInsets.left),
+            control.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -tvSafeInsets.right),
+            control.heightAnchor.constraint(equalToConstant: 80)
+        ])
+        topMenuControl = control
     }
     
     private func setupSearchBar() {
         searchContainer.translatesAutoresizingMaskIntoConstraints = false
         searchContainer.layer.cornerRadius = 18
         searchContainer.clipsToBounds = true
+        searchContainer.backgroundColor = searchBackgroundNormal
+        searchContainer.contentView.backgroundColor = .clear
         view.addSubview(searchContainer)
         
         let searchIcon = UIImageView(image: UIImage(systemName: "magnifyingglass"))
@@ -101,12 +153,17 @@ final class ChatListViewController: UICollectionViewController {
         searchField.clearButtonMode = .whileEditing
         searchField.backgroundColor = .clear
         searchField.addTarget(self, action: #selector(searchTextDidChange(_:)), for: .editingChanged)
+        searchField.tintColor = .systemBlue
+        searchField.attributedPlaceholder = NSAttributedString(
+            string: "Поиск чатов",
+            attributes: [.foregroundColor: UIColor(white: 0.6, alpha: 1)]
+        )
         
         searchContainer.contentView.addSubview(searchIcon)
         searchContainer.contentView.addSubview(searchField)
         
         NSLayoutConstraint.activate([
-            searchContainer.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 20),
+            searchContainer.topAnchor.constraint(equalTo: topMenuControl?.bottomAnchor ?? view.safeAreaLayoutGuide.topAnchor, constant: 20),
             searchContainer.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: tvSafeInsets.left),
             searchContainer.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -tvSafeInsets.right),
             searchContainer.heightAnchor.constraint(equalToConstant: 70),
@@ -119,8 +176,29 @@ final class ChatListViewController: UICollectionViewController {
             searchField.leadingAnchor.constraint(equalTo: searchIcon.trailingAnchor, constant: 16),
             searchField.trailingAnchor.constraint(equalTo: searchContainer.trailingAnchor, constant: -24),
             searchField.topAnchor.constraint(equalTo: searchContainer.topAnchor),
-            searchField.bottomAnchor.constraint(equalTo: searchContainer.bottomAnchor)
+            searchField.bottomAnchor.constraint(equalTo: searchContainer.bottomAnchor),
         ])
+        
+        setupSelectionControls()
+        installFocusGuides()
+    }
+    
+    private func setupSelectionControls() {
+        guard onSaveSelection != nil else { return }
+        
+        selectionStatusLabel.translatesAutoresizingMaskIntoConstraints = false
+        selectionStatusLabel.textColor = .white
+        selectionStatusLabel.font = .systemFont(ofSize: 24, weight: .medium)
+        selectionStatusLabel.textAlignment = .left
+        selectionStatusLabel.text = "Не выбрано"
+        view.addSubview(selectionStatusLabel)
+
+        NSLayoutConstraint.activate([
+            selectionStatusLabel.topAnchor.constraint(equalTo: searchContainer.bottomAnchor, constant: 16),
+            selectionStatusLabel.leadingAnchor.constraint(equalTo: searchContainer.leadingAnchor)
+        ])
+        
+        updateSelectionUI()
     }
     
     private func setupLoadingIndicator() {
@@ -162,9 +240,10 @@ final class ChatListViewController: UICollectionViewController {
     }
     
     private func configureDataSource() {
-        dataSource = UICollectionViewDiffableDataSource<Section, TG.Chat>(collectionView: collectionView) { collectionView, indexPath, chat in
+        dataSource = UICollectionViewDiffableDataSource<Section, TG.Chat>(collectionView: collectionView) { [weak self] collectionView, indexPath, chat in
             let cell = collectionView.dequeueReusableCell(withReuseIdentifier: "ChatCell", for: indexPath) as! ChatCell
-            cell.configure(with: chat)
+            let isSelected = self?.selectedChatIds.contains(chat.id) ?? false
+            cell.configure(with: chat, selected: isSelected)
             return cell
         }
         
@@ -247,6 +326,20 @@ final class ChatListViewController: UICollectionViewController {
         if let gradient = view.layer.sublayers?.first as? CAGradientLayer {
             gradient.frame = view.bounds
         }
+        // #region agent log
+        agentLog(
+            hypothesisId: "H3",
+            location: "ChatListViewController:viewDidLayoutSubviews",
+            message: "frames after layout",
+            data: [
+                "menuFrame": NSCoder.string(for: topMenuControl?.frame ?? .zero),
+                "searchFrame": NSCoder.string(for: searchContainer.frame),
+                "guideDownHeight": focusGuideDownToSearch?.layoutFrame.height ?? 0,
+                "guideUpHeight": focusGuideUpToMenu?.layoutFrame.height ?? 0,
+                "guideUpEnabled": focusGuideUpToMenu?.isEnabled ?? false
+            ]
+        )
+        // #endregion
     }
     
     private func updateEmptyState(for chats: [TG.Chat]) {
@@ -278,19 +371,14 @@ final class ChatListViewController: UICollectionViewController {
     
     override func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
         guard let chat = dataSource.itemIdentifier(for: indexPath) else { return }
-        
-        if let appDelegate = UIApplication.shared.delegate as? AppDelegate,
-           let existingVC = appDelegate.messagesViewController,
-           existingVC.chatId == chat.id {
-            navigationController?.pushViewController(existingVC, animated: true)
-            return
+        if selectedChatIds.contains(chat.id) {
+            selectedChatIds.remove(chat.id)
+        } else {
+            selectedChatIds.insert(chat.id)
         }
-        
-        let messagesVC = MessagesViewController(chatId: chat.id, client: viewModel.client)
-        if let appDelegate = UIApplication.shared.delegate as? AppDelegate {
-            appDelegate.setMessagesViewController(messagesVC)
-        }
-        navigationController?.pushViewController(messagesVC, animated: true)
+        refreshSelectionMarks(for: [chat.id])
+        updateSelectionUI()
+        onSaveSelection?(selectedChatIds)
     }
     
     @objc private func searchTextDidChange(_ sender: UITextField) {
@@ -298,10 +386,230 @@ final class ChatListViewController: UICollectionViewController {
             self?.viewModel.updateSearchQuery(sender.text ?? "")
         }
     }
+
+    @objc private func topMenuChanged(_ sender: UISegmentedControl) {
+        switch sender.selectedSegmentIndex {
+        case 0:
+            if let nav = navigationController {
+                nav.popToRootViewController(animated: true)
+            }
+        case 2:
+            (UIApplication.shared.delegate as? AppDelegate)?.openSettings()
+        default:
+            break
+        }
+    }
+    
+    private func applyCurrentSnapshot(animated: Bool) {
+        var snapshot = NSDiffableDataSourceSnapshot<Section, TG.Chat>()
+        snapshot.appendSections([.main])
+        snapshot.appendItems(viewModel.filteredChats, toSection: .main)
+        dataSource.apply(snapshot, animatingDifferences: animated)
+        updateEmptyState(for: viewModel.filteredChats)
+    }
+    
+    private func refreshSelectionMarks(for chatIds: [Int64]? = nil) {
+        var snapshot = dataSource.snapshot()
+        let idsToUpdate = Set(chatIds ?? snapshot.itemIdentifiers.map(\.id))
+        let chatsToUpdate = snapshot.itemIdentifiers.filter { idsToUpdate.contains($0.id) }
+        guard !chatsToUpdate.isEmpty else { return }
+        
+        if #available(tvOS 15.0, *) {
+            snapshot.reconfigureItems(chatsToUpdate)
+        } else {
+            snapshot.reloadItems(chatsToUpdate)
+        }
+        
+        dataSource.apply(snapshot, animatingDifferences: false)
+    }
+    
+    private func updateSelectionUI() {
+        guard onSaveSelection != nil else { return }
+        let count = selectedChatIds.count
+        selectionStatusLabel.text = count == 0 ? "Не выбрано" : "Выбрано: \(count)"
+    }
+
+    override func didUpdateFocus(in context: UIFocusUpdateContext, with coordinator: UIFocusAnimationCoordinator) {
+        super.didUpdateFocus(in: context, with: coordinator)
+
+        let next = context.nextFocusedView
+        let prev = context.previouslyFocusedView
+
+        if next === searchField {
+            updateSearchFocus(isFocused: true)
+        } else if prev === searchField {
+            updateSearchFocus(isFocused: false)
+        }
+
+        // #region agent log
+        agentLog(
+            hypothesisId: "H1",
+            location: "ChatListViewController:didUpdateFocus",
+            message: "focus transition",
+            data: [
+                "heading": context.focusHeading.rawValue,
+                "next": String(describing: next),
+                "prev": String(describing: prev)
+            ]
+        )
+        // #endregion
+    }
+
+    private func updateSearchFocus(isFocused: Bool) {
+        UIView.animate(withDuration: 0.15) {
+            self.searchContainer.backgroundColor = isFocused ? self.searchBackgroundFocused : self.searchBackgroundNormal
+            self.searchContainer.layer.borderWidth = isFocused ? 2 : 0
+            self.searchContainer.layer.borderColor = isFocused ? UIColor.systemBlue.cgColor : UIColor.clear.cgColor
+        }
+    }
     
     private func closeKeyboard() {
         searchField.resignFirstResponder()
     }
+
+    private func installFocusGuides() {
+        guard let topMenuControl else { return }
+        
+        let guideDown = UIFocusGuide()
+        guideDown.preferredFocusEnvironments = [searchField]
+        view.addLayoutGuide(guideDown)
+        NSLayoutConstraint.activate([
+            guideDown.topAnchor.constraint(equalTo: topMenuControl.bottomAnchor, constant: 4),
+            guideDown.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            guideDown.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            guideDown.heightAnchor.constraint(equalToConstant: 24)
+        ])
+        focusGuideDownToSearch = guideDown
+        
+        let guideUp = UIFocusGuide()
+        guideUp.preferredFocusEnvironments = [topMenuControl]
+        guideUp.isEnabled = true
+        view.addLayoutGuide(guideUp)
+        NSLayoutConstraint.activate([
+            guideUp.bottomAnchor.constraint(equalTo: searchContainer.topAnchor, constant: -4),
+            guideUp.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            guideUp.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            guideUp.heightAnchor.constraint(equalToConstant: 24)
+        ])
+        focusGuideUpToMenu = guideUp
+
+        // #region agent log
+        agentLog(
+            hypothesisId: "H2",
+            location: "ChatListViewController:installFocusGuides",
+            message: "focus guides created",
+            data: [
+                "guideDownPreferred": guideDown.preferredFocusEnvironments.count,
+                "guideUpPreferred": guideUp.preferredFocusEnvironments.count,
+                "guideUpEnabled": guideUp.isEnabled
+            ]
+        )
+        // #endregion
+    }
+
+    override func shouldUpdateFocus(in context: UIFocusUpdateContext) -> Bool {
+        let headingValue = context.focusHeading.rawValue
+        let next = context.nextFocusedView
+        let prev = context.previouslyFocusedView
+
+        // #region agent log
+        agentLog(
+            hypothesisId: "H4",
+            location: "ChatListViewController:shouldUpdateFocus",
+            message: "focus decision",
+            data: [
+                "heading": headingValue,
+                "next": String(describing: next),
+                "prev": String(describing: prev),
+                "guideUpEnabled": focusGuideUpToMenu?.isEnabled ?? false,
+                "menuCanFocus": topMenuControl?.canBecomeFocused ?? false,
+                "isPrevSearch": prev === searchField,
+                "headingUp": context.focusHeading.contains(.up)
+            ]
+        )
+        // #endregion
+
+        let isPrevSearch = (prev === searchField)
+        let headingUp = context.focusHeading.contains(.up)
+
+        if isPrevSearch, headingUp {
+            pendingMenuFocus = true
+            // #region agent log
+            agentLog(
+                hypothesisId: "H5",
+                location: "ChatListViewController:shouldUpdateFocus",
+                message: "attempt focus to menu",
+                data: [
+                    "menuCanFocus": topMenuControl?.canBecomeFocused ?? false,
+                    "focusSystemNil": UIFocusSystem.focusSystem(for: view) == nil
+                ]
+            )
+            // #endregion
+            setNeedsFocusUpdate()
+            UIFocusSystem.focusSystem(for: view)?.updateFocusIfNeeded()
+            // #region agent log
+            agentLog(
+                hypothesisId: "H5",
+                location: "ChatListViewController:shouldUpdateFocus",
+                message: "requested focus update to menu",
+                data: [
+                    "menuCanFocus": topMenuControl?.canBecomeFocused ?? false,
+                    "guideUpEnabled": focusGuideUpToMenu?.isEnabled ?? false
+                ]
+            )
+            // #endregion
+            return false
+        }
+        return true
+    }
+
+    override var preferredFocusEnvironments: [UIFocusEnvironment] {
+        if pendingMenuFocus, let menu = topMenuControl {
+            // #region agent log
+            agentLog(
+                hypothesisId: "H6",
+                location: "ChatListViewController:preferredFocusEnvironments",
+                message: "directing focus to menu",
+                data: ["menuCanFocus": menu.canBecomeFocused]
+            )
+            // #endregion
+            pendingMenuFocus = false
+            return [menu]
+        }
+        return super.preferredFocusEnvironments
+    }
+
+    // #region agent log
+    private func agentLog(
+        hypothesisId: String,
+        location: String,
+        message: String,
+        data: [String: Any] = [:]
+    ) {
+        let payload: [String: Any] = [
+            "sessionId": "debug-session",
+            "runId": "pre-fix",
+            "hypothesisId": hypothesisId,
+            "location": location,
+            "message": message,
+            "data": data,
+            "timestamp": Int(Date().timeIntervalSince1970 * 1000)
+        ]
+        guard let jsonData = try? JSONSerialization.data(withJSONObject: payload),
+              var line = String(data: jsonData, encoding: .utf8) else { return }
+        line.append("\n")
+        let url = URL(fileURLWithPath: "/Users/dmitriy/Documents/Projects/TGtv/.cursor/debug.log")
+        if let handle = try? FileHandle(forWritingTo: url) {
+            handle.seekToEndOfFile()
+            if let data = line.data(using: .utf8) {
+                handle.write(data)
+            }
+            try? handle.close()
+        } else {
+            try? line.write(to: url, atomically: true, encoding: .utf8)
+        }
+    }
+    // #endregion
 }
 
 extension ChatListViewController: UITextFieldDelegate {
@@ -415,18 +723,18 @@ final class ChatCell: UICollectionViewCell {
         gradientLayer?.frame = containerView.bounds
     }
     
-    func configure(with chat: TG.Chat) {
+    func configure(with chat: TG.Chat, selected: Bool) {
         titleLabel.text = chat.title
         messageLabel.isHidden = true
         messageLabel.text = nil
         
-        // Avatar initials
         let initials = chat.title.prefix(2).uppercased()
         avatarLabel.text = String(initials)
         
-        // Random avatar color based on chat id
         let hue = CGFloat(abs(chat.id.hashValue) % 360) / 360.0
         avatarView.backgroundColor = UIColor(hue: hue, saturation: 0.5, brightness: 0.7, alpha: 1)
+        
+        updateSelection(selected)
     }
     
     override func didUpdateFocus(in context: UIFocusUpdateContext, with coordinator: UIFocusAnimationCoordinator) {
@@ -462,5 +770,29 @@ final class ChatCell: UICollectionViewCell {
         super.prepareForReuse()
         containerView.transform = .identity
         containerView.layer.shadowOpacity = 0
+    }
+    
+    private func updateSelection(_ isSelected: Bool) {
+        if let mark = containerView.viewWithTag(999) as? UIImageView {
+            mark.isHidden = !isSelected
+            return
+        }
+        
+        let selectionMark = UIImageView(image: UIImage(systemName: "checkmark.circle.fill"))
+        selectionMark.translatesAutoresizingMaskIntoConstraints = false
+        selectionMark.tintColor = UIColor.systemGreen
+        selectionMark.backgroundColor = UIColor(white: 0, alpha: 0.25)
+        selectionMark.layer.cornerRadius = 18
+        selectionMark.clipsToBounds = true
+        selectionMark.tag = 999
+        selectionMark.isHidden = !isSelected
+        containerView.addSubview(selectionMark)
+        
+        NSLayoutConstraint.activate([
+            selectionMark.trailingAnchor.constraint(equalTo: containerView.trailingAnchor, constant: -16),
+            selectionMark.topAnchor.constraint(equalTo: containerView.topAnchor, constant: 16),
+            selectionMark.widthAnchor.constraint(equalToConstant: 36),
+            selectionMark.heightAnchor.constraint(equalToConstant: 36)
+        ])
     }
 }

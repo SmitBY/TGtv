@@ -5,14 +5,85 @@ import Combine
 final class AuthQRController: UIViewController {
     private let authService: AuthService
     private var qrContainerView: UIView!
+    private var platterBlurView: UIVisualEffectView!
+    private var platterTintView: UIView!
     private var qrImageView: UIImageView!
+    private var tvPlusLogoImageView: UIImageView!
+    private var tvChannelsLogoImageView: UIImageView!
     private var titleLabel: UILabel!
     private var statusLabel: UILabel!
+    private var qrHeaderLabel: UILabel!
+    private var qrStepsLabel: UILabel!
     private var loadingIndicator: UIActivityIndicatorView!
     private var passwordTextField: UITextField!
     private var loginButton: UIButton!
     private var passwordView: UIView!
+    private var backgroundImageView: UIImageView!
     private var cancellables = Set<AnyCancellable>()
+
+    // MARK: - Scaled layout (base: 1920x1080)
+    private struct LayoutBase {
+        static let screenW: CGFloat = 1920
+        static let screenH: CGFloat = 1080
+
+        // Left panel
+        static let panelW: CGFloat = 548
+        static let panelH: CGFloat = 756
+        static let panelLeading: CGFloat = 80
+        static let panelTop: CGFloat = 174 // 1080 * 0.1611
+
+        // Internal paddings
+        static let labelSideInset: CGFloat = 60
+        static let panelCornerRadius: CGFloat = 12
+        static let channelsLogoBorderWidth: CGFloat = 1
+
+        // Logos
+        static let tvPlusTop: CGFloat = 49
+        static let tvPlusW: CGFloat = 170
+        static let tvPlusH: CGFloat = 64
+
+        static let tvChannelsTop: CGFloat = 128
+        static let tvChannelsW: CGFloat = 132
+        static let tvChannelsH: CGFloat = 18
+
+        // Title/steps positions (relative to panel centerY)
+        static let headerCenterYOffset: CGFloat = -166.29
+        static let headerH: CGFloat = 38
+
+        static let stepsCenterYOffset: CGFloat = -56.29
+        static let stepsH: CGFloat = 128
+
+        // QR
+        static let qrTop: CGFloat = 410
+        static let qrSize: CGFloat = 297
+    }
+
+    private var panelWidthConstraint: NSLayoutConstraint?
+    private var panelHeightConstraint: NSLayoutConstraint?
+    private var panelLeadingConstraint: NSLayoutConstraint?
+    private var panelTopConstraint: NSLayoutConstraint?
+
+    private var tvPlusTopConstraint: NSLayoutConstraint?
+    private var tvPlusWConstraint: NSLayoutConstraint?
+    private var tvPlusHConstraint: NSLayoutConstraint?
+
+    private var tvChannelsTopConstraint: NSLayoutConstraint?
+    private var tvChannelsWConstraint: NSLayoutConstraint?
+    private var tvChannelsHConstraint: NSLayoutConstraint?
+
+    private var headerLeadingConstraint: NSLayoutConstraint?
+    private var headerTrailingConstraint: NSLayoutConstraint?
+    private var headerHeightConstraint: NSLayoutConstraint?
+    private var headerCenterYConstraint: NSLayoutConstraint?
+
+    private var stepsLeadingConstraint: NSLayoutConstraint?
+    private var stepsTrailingConstraint: NSLayoutConstraint?
+    private var stepsHeightConstraint: NSLayoutConstraint?
+    private var stepsCenterYConstraint: NSLayoutConstraint?
+
+    private var qrTopConstraint: NSLayoutConstraint?
+    private var qrWConstraint: NSLayoutConstraint?
+    private var qrHConstraint: NSLayoutConstraint?
     
     // tvOS safe area (Apple HIG)
     private let tvSafeInsets = UIEdgeInsets(top: 60, left: 80, bottom: 60, right: 80)
@@ -33,22 +104,49 @@ final class AuthQRController: UIViewController {
     }
     
     private func setupUI() {
-        // Gradient background
-        let gradient = CAGradientLayer()
-        gradient.colors = [
-            UIColor(red: 0.08, green: 0.08, blue: 0.14, alpha: 1).cgColor,
-            UIColor(red: 0.04, green: 0.04, blue: 0.08, alpha: 1).cgColor
-        ]
-        gradient.frame = view.bounds
-        view.layer.insertSublayer(gradient, at: 0)
+        // Background image + gradient overlay
+        backgroundImageView = UIImageView()
+        backgroundImageView.translatesAutoresizingMaskIntoConstraints = false
+        backgroundImageView.contentMode = .scaleAspectFill
+        // Пытаемся загрузить фон из ресурсов; если не найден — ставим запасной тёмный цвет
+        if let img = UIImage(named: "Background Image") {
+            backgroundImageView.image = img
+        } else if let path = Bundle.main.path(forResource: "Background Image", ofType: "png"),
+                  let img = UIImage(contentsOfFile: path) {
+            backgroundImageView.image = img
+        } else {
+            backgroundImageView.backgroundColor = UIColor(red: 0.06, green: 0.07, blue: 0.12, alpha: 1)
+        }
+        view.addSubview(backgroundImageView)
+        NSLayoutConstraint.activate([
+            backgroundImageView.topAnchor.constraint(equalTo: view.topAnchor),
+            backgroundImageView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            backgroundImageView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            backgroundImageView.trailingAnchor.constraint(equalTo: view.trailingAnchor)
+        ])
+
+        let gradientView = UIView()
+        gradientView.translatesAutoresizingMaskIntoConstraints = false
+        // Убираем затемнение фоновой картинки
+        gradientView.backgroundColor = .clear
+        gradientView.isUserInteractionEnabled = false
+        view.addSubview(gradientView)
+        NSLayoutConstraint.activate([
+            gradientView.topAnchor.constraint(equalTo: view.topAnchor),
+            gradientView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            gradientView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            gradientView.trailingAnchor.constraint(equalTo: view.trailingAnchor)
+        ])
         
         // Title
         titleLabel = UILabel()
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
-        titleLabel.text = "Telegram"
+        // Требование: убрать надпись Telegram сверху
+        titleLabel.text = nil
         titleLabel.textColor = .white
         titleLabel.font = .systemFont(ofSize: 52, weight: .bold)
         titleLabel.textAlignment = .center
+        titleLabel.isHidden = true
         view.addSubview(titleLabel)
         
         // Loading indicator
@@ -61,15 +159,88 @@ final class AuthQRController: UIViewController {
         // QR Container with shadow
         qrContainerView = UIView()
         qrContainerView.translatesAutoresizingMaskIntoConstraints = false
-        qrContainerView.backgroundColor = .white
-        qrContainerView.layer.cornerRadius = 24
-        qrContainerView.layer.shadowColor = UIColor.white.cgColor
-        qrContainerView.layer.shadowOpacity = 0.15
-        qrContainerView.layer.shadowOffset = .zero
-        qrContainerView.layer.shadowRadius = 30
+        // "Platter": blur + tint (как в Figma: rgba(30,30,30,0.5) + backdrop blur)
+        qrContainerView.backgroundColor = .clear
+        qrContainerView.clipsToBounds = true
+        qrContainerView.layer.cornerRadius = LayoutBase.panelCornerRadius
+        // Тень блока (как в макете)
+        qrContainerView.layer.shadowColor = UIColor(red: 0, green: 0, blue: 0, alpha: 0.25).cgColor
+        qrContainerView.layer.shadowOpacity = 1
+        qrContainerView.layer.shadowRadius = 4
+        qrContainerView.layer.shadowOffset = CGSize(width: 0, height: 4)
         qrContainerView.isHidden = true
         view.addSubview(qrContainerView)
-        
+
+        // В Figma это backdrop-filter blur без дополнительного затемнения от blur-style,
+        // поэтому используем более нейтральный .regular (а "цвет" даёт platterTintView).
+        platterBlurView = UIVisualEffectView(effect: UIBlurEffect(style: .regular))
+        platterBlurView.translatesAutoresizingMaskIntoConstraints = false
+        platterBlurView.isUserInteractionEnabled = false
+        qrContainerView.addSubview(platterBlurView)
+
+        platterTintView = UIView()
+        platterTintView.translatesAutoresizingMaskIntoConstraints = false
+        platterTintView.isUserInteractionEnabled = false
+        // Чуть более "матовый" (можно подкрутить alpha при желании)
+        platterTintView.backgroundColor = UIColor(red: 30/255, green: 30/255, blue: 30/255, alpha: 0.5)
+        qrContainerView.addSubview(platterTintView)
+
+        NSLayoutConstraint.activate([
+            platterBlurView.topAnchor.constraint(equalTo: qrContainerView.topAnchor),
+            platterBlurView.bottomAnchor.constraint(equalTo: qrContainerView.bottomAnchor),
+            platterBlurView.leadingAnchor.constraint(equalTo: qrContainerView.leadingAnchor),
+            platterBlurView.trailingAnchor.constraint(equalTo: qrContainerView.trailingAnchor),
+
+            platterTintView.topAnchor.constraint(equalTo: qrContainerView.topAnchor),
+            platterTintView.bottomAnchor.constraint(equalTo: qrContainerView.bottomAnchor),
+            platterTintView.leadingAnchor.constraint(equalTo: qrContainerView.leadingAnchor),
+            platterTintView.trailingAnchor.constraint(equalTo: qrContainerView.trailingAnchor)
+        ])
+
+        // Логотипы (есть в ассетах)
+        tvPlusLogoImageView = UIImageView()
+        tvPlusLogoImageView.translatesAutoresizingMaskIntoConstraints = false
+        tvPlusLogoImageView.contentMode = .scaleAspectFit
+        tvPlusLogoImageView.image = UIImage(named: "TVPlusLogo")
+        qrContainerView.addSubview(tvPlusLogoImageView)
+
+        tvChannelsLogoImageView = UIImageView()
+        tvChannelsLogoImageView.translatesAutoresizingMaskIntoConstraints = false
+        tvChannelsLogoImageView.contentMode = .scaleAspectFit
+        tvChannelsLogoImageView.image = UIImage(named: "TVChannelsLogo")
+        // В макете у Channels Logo есть обводка 1px
+        tvChannelsLogoImageView.layer.borderColor = UIColor.black.cgColor
+        qrContainerView.addSubview(tvChannelsLogoImageView)
+
+        // Заголовок
+        qrHeaderLabel = UILabel()
+        qrHeaderLabel.translatesAutoresizingMaskIntoConstraints = false
+        qrHeaderLabel.textColor = UIColor(red: 1, green: 1, blue: 1, alpha: 1)
+        qrHeaderLabel.font = .systemFont(ofSize: 31, weight: .bold)
+        qrHeaderLabel.textAlignment = .center
+        qrHeaderLabel.numberOfLines = 1
+        qrHeaderLabel.text = "Scan from Mobile Telegram"
+        qrContainerView.addSubview(qrHeaderLabel)
+
+        // Шаги (как в присланном макете)
+        qrStepsLabel = UILabel()
+        qrStepsLabel.translatesAutoresizingMaskIntoConstraints = false
+        qrStepsLabel.textColor = UIColor(red: 1, green: 1, blue: 1, alpha: 0.5)
+        qrStepsLabel.font = .systemFont(ofSize: 25, weight: .bold)
+        qrStepsLabel.textAlignment = .center
+        qrStepsLabel.numberOfLines = 0
+        qrStepsLabel.lineBreakMode = .byWordWrapping
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.lineHeightMultiple = 1.07
+        // Важно: для attributedText выравнивание задаём здесь, иначе может выглядеть как "справа"
+        paragraphStyle.alignment = .center
+        paragraphStyle.baseWritingDirection = .leftToRight
+        qrStepsLabel.attributedText = NSMutableAttributedString(
+            string: "1. Open Telegram on your phone\n2. Go to Settings > Devices > Link Device\n3. Scan this image to Log in",
+            attributes: [.paragraphStyle: paragraphStyle]
+        )
+        qrContainerView.addSubview(qrStepsLabel)
+
         qrImageView = UIImageView()
         qrImageView.translatesAutoresizingMaskIntoConstraints = false
         qrImageView.contentMode = .scaleAspectFit
@@ -121,27 +292,80 @@ final class AuthQRController: UIViewController {
         loginButton.addTarget(self, action: #selector(loginButtonTapped), for: .primaryActionTriggered)
         passwordView.addSubview(loginButton)
         
+        // Panel placement (left block)
+        panelLeadingConstraint = qrContainerView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: LayoutBase.panelLeading)
+        panelTopConstraint = qrContainerView.topAnchor.constraint(equalTo: view.topAnchor, constant: LayoutBase.panelTop)
+        panelWidthConstraint = qrContainerView.widthAnchor.constraint(equalToConstant: LayoutBase.panelW)
+        panelHeightConstraint = qrContainerView.heightAnchor.constraint(equalToConstant: LayoutBase.panelH)
+
+        // Logos
+        tvPlusTopConstraint = tvPlusLogoImageView.topAnchor.constraint(equalTo: qrContainerView.topAnchor, constant: LayoutBase.tvPlusTop)
+        tvPlusWConstraint = tvPlusLogoImageView.widthAnchor.constraint(equalToConstant: LayoutBase.tvPlusW)
+        tvPlusHConstraint = tvPlusLogoImageView.heightAnchor.constraint(equalToConstant: LayoutBase.tvPlusH)
+
+        tvChannelsTopConstraint = tvChannelsLogoImageView.topAnchor.constraint(equalTo: qrContainerView.topAnchor, constant: LayoutBase.tvChannelsTop)
+        tvChannelsWConstraint = tvChannelsLogoImageView.widthAnchor.constraint(equalToConstant: LayoutBase.tvChannelsW)
+        tvChannelsHConstraint = tvChannelsLogoImageView.heightAnchor.constraint(equalToConstant: LayoutBase.tvChannelsH)
+
+        // Header
+        headerLeadingConstraint = qrHeaderLabel.leadingAnchor.constraint(equalTo: qrContainerView.leadingAnchor, constant: LayoutBase.labelSideInset)
+        headerTrailingConstraint = qrHeaderLabel.trailingAnchor.constraint(equalTo: qrContainerView.trailingAnchor, constant: -LayoutBase.labelSideInset)
+        headerHeightConstraint = qrHeaderLabel.heightAnchor.constraint(equalToConstant: LayoutBase.headerH)
+        headerCenterYConstraint = qrHeaderLabel.centerYAnchor.constraint(equalTo: qrContainerView.centerYAnchor, constant: LayoutBase.headerCenterYOffset)
+
+        // Steps
+        stepsLeadingConstraint = qrStepsLabel.leadingAnchor.constraint(equalTo: qrContainerView.leadingAnchor, constant: LayoutBase.labelSideInset)
+        stepsTrailingConstraint = qrStepsLabel.trailingAnchor.constraint(equalTo: qrContainerView.trailingAnchor, constant: -LayoutBase.labelSideInset)
+        stepsHeightConstraint = qrStepsLabel.heightAnchor.constraint(equalToConstant: LayoutBase.stepsH)
+        stepsCenterYConstraint = qrStepsLabel.centerYAnchor.constraint(equalTo: qrContainerView.centerYAnchor, constant: LayoutBase.stepsCenterYOffset)
+
+        // QR
+        qrTopConstraint = qrImageView.topAnchor.constraint(equalTo: qrContainerView.topAnchor, constant: LayoutBase.qrTop)
+        qrWConstraint = qrImageView.widthAnchor.constraint(equalToConstant: LayoutBase.qrSize)
+        qrHConstraint = qrImageView.heightAnchor.constraint(equalToConstant: LayoutBase.qrSize)
+
         NSLayoutConstraint.activate([
-            titleLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            titleLabel.leadingAnchor.constraint(equalTo: qrContainerView.leadingAnchor, constant: 20),
+            titleLabel.trailingAnchor.constraint(equalTo: qrContainerView.trailingAnchor, constant: -20),
             titleLabel.topAnchor.constraint(equalTo: view.topAnchor, constant: tvSafeInsets.top + 40),
             
-            loadingIndicator.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            loadingIndicator.centerXAnchor.constraint(equalTo: qrContainerView.centerXAnchor),
             loadingIndicator.centerYAnchor.constraint(equalTo: view.centerYAnchor),
             
-            qrContainerView.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            qrContainerView.centerYAnchor.constraint(equalTo: view.centerYAnchor, constant: -20),
-            qrContainerView.widthAnchor.constraint(equalToConstant: 340),
-            qrContainerView.heightAnchor.constraint(equalToConstant: 340),
+            panelLeadingConstraint!,
+            panelTopConstraint!,
+            panelWidthConstraint!,
+            panelHeightConstraint!,
+
+            tvPlusLogoImageView.centerXAnchor.constraint(equalTo: qrContainerView.centerXAnchor),
+            tvPlusTopConstraint!,
+            tvPlusWConstraint!,
+            tvPlusHConstraint!,
+
+            tvChannelsLogoImageView.centerXAnchor.constraint(equalTo: qrContainerView.centerXAnchor),
+            tvChannelsTopConstraint!,
+            tvChannelsWConstraint!,
+            tvChannelsHConstraint!,
+
+            headerLeadingConstraint!,
+            headerTrailingConstraint!,
+            headerHeightConstraint!,
+            headerCenterYConstraint!,
+
+            stepsLeadingConstraint!,
+            stepsTrailingConstraint!,
+            stepsHeightConstraint!,
+            stepsCenterYConstraint!,
+
+            qrImageView.centerXAnchor.constraint(equalTo: qrContainerView.centerXAnchor),
+            qrTopConstraint!,
+            qrWConstraint!,
+            qrHConstraint!,
             
-            qrImageView.topAnchor.constraint(equalTo: qrContainerView.topAnchor, constant: 20),
-            qrImageView.leadingAnchor.constraint(equalTo: qrContainerView.leadingAnchor, constant: 20),
-            qrImageView.trailingAnchor.constraint(equalTo: qrContainerView.trailingAnchor, constant: -20),
-            qrImageView.bottomAnchor.constraint(equalTo: qrContainerView.bottomAnchor, constant: -20),
-            
-            statusLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            statusLabel.centerXAnchor.constraint(equalTo: qrContainerView.centerXAnchor),
             statusLabel.topAnchor.constraint(equalTo: qrContainerView.bottomAnchor, constant: 40),
-            statusLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: tvSafeInsets.left),
-            statusLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -tvSafeInsets.right),
+            statusLabel.leadingAnchor.constraint(equalTo: qrContainerView.leadingAnchor, constant: 8),
+            statusLabel.trailingAnchor.constraint(equalTo: qrContainerView.trailingAnchor, constant: -8),
             
             passwordView.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             passwordView.centerYAnchor.constraint(equalTo: view.centerYAnchor),
@@ -161,13 +385,67 @@ final class AuthQRController: UIViewController {
         
         let tapGesture = UITapGestureRecognizer(target: self, action: #selector(dismissKeyboard))
         view.addGestureRecognizer(tapGesture)
+
+        // Первичная настройка масштабирования (после создания constraints)
+        updateScaledLayout()
     }
     
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
-        if let gradient = view.layer.sublayers?.first as? CAGradientLayer {
-            gradient.frame = view.bounds
-        }
+        updateScaledLayout()
+    }
+
+    private func updateScaledLayout() {
+        // Единый коэффициент масштаба от эталона 1920x1080, чтобы сохранять пропорции
+        let w = view.bounds.width
+        let h = view.bounds.height
+        guard w > 0, h > 0 else { return }
+        let scale = min(w / LayoutBase.screenW, h / LayoutBase.screenH)
+
+        panelWidthConstraint?.constant = LayoutBase.panelW * scale
+        panelHeightConstraint?.constant = LayoutBase.panelH * scale
+        panelLeadingConstraint?.constant = LayoutBase.panelLeading * scale
+        panelTopConstraint?.constant = LayoutBase.panelTop * scale
+
+        // Скругление и обводка тоже масштабируем
+        qrContainerView.layer.cornerRadius = LayoutBase.panelCornerRadius * scale
+        platterBlurView.layer.cornerRadius = qrContainerView.layer.cornerRadius
+        platterBlurView.clipsToBounds = true
+        platterTintView.layer.cornerRadius = qrContainerView.layer.cornerRadius
+        platterTintView.clipsToBounds = true
+        tvChannelsLogoImageView.layer.borderWidth = LayoutBase.channelsLogoBorderWidth * scale
+
+        tvPlusTopConstraint?.constant = LayoutBase.tvPlusTop * scale
+        tvPlusWConstraint?.constant = LayoutBase.tvPlusW * scale
+        tvPlusHConstraint?.constant = LayoutBase.tvPlusH * scale
+
+        tvChannelsTopConstraint?.constant = LayoutBase.tvChannelsTop * scale
+        tvChannelsWConstraint?.constant = LayoutBase.tvChannelsW * scale
+        tvChannelsHConstraint?.constant = LayoutBase.tvChannelsH * scale
+
+        headerLeadingConstraint?.constant = LayoutBase.labelSideInset * scale
+        headerTrailingConstraint?.constant = -(LayoutBase.labelSideInset * scale)
+        headerHeightConstraint?.constant = LayoutBase.headerH * scale
+        headerCenterYConstraint?.constant = LayoutBase.headerCenterYOffset * scale
+
+        stepsLeadingConstraint?.constant = LayoutBase.labelSideInset * scale
+        stepsTrailingConstraint?.constant = -(LayoutBase.labelSideInset * scale)
+        stepsHeightConstraint?.constant = LayoutBase.stepsH * scale
+        stepsCenterYConstraint?.constant = LayoutBase.stepsCenterYOffset * scale
+
+        qrTopConstraint?.constant = LayoutBase.qrTop * scale
+        qrWConstraint?.constant = LayoutBase.qrSize * scale
+        qrHConstraint?.constant = LayoutBase.qrSize * scale
+
+        // Масштабируем шрифты тоже пропорционально
+        qrHeaderLabel.font = .systemFont(ofSize: 31 * scale, weight: .bold)
+        qrStepsLabel.font = .systemFont(ofSize: 25 * scale, weight: .bold)
+
+        // shadowPath должен соответствовать актуальным bounds после масштабирования
+        qrContainerView.layer.shadowPath = UIBezierPath(
+            roundedRect: qrContainerView.bounds,
+            cornerRadius: qrContainerView.layer.cornerRadius
+        ).cgPath
     }
     
     private func setupBindings() {
@@ -179,7 +457,9 @@ final class AuthQRController: UIViewController {
                 self.loadingIndicator.isHidden = true
                 self.qrContainerView.isHidden = false
                 self.passwordView.isHidden = true
-                self.statusLabel.text = "Отсканируйте QR-код\nв приложении Telegram"
+                // Текст инструкции теперь внутри qrContainerView
+                self.statusLabel.text = nil
+                self.statusLabel.isHidden = true
                 
                 if let qrImage = self.generateQRCode(from: url) {
                     self.qrImageView.image = qrImage
@@ -195,6 +475,7 @@ final class AuthQRController: UIViewController {
                 self.loadingIndicator.isHidden = true
                 self.qrContainerView.isHidden = true
                 self.passwordView.isHidden = false
+                self.statusLabel.isHidden = false
                 
                 let hint = self.authService.passwordHint.isEmpty
                     ? "Введите пароль от аккаунта"
@@ -210,20 +491,38 @@ final class AuthQRController: UIViewController {
         authService.$isAuthorized
             .receive(on: DispatchQueue.main)
             .sink { [weak self] isAuthorized in
-                guard let self, isAuthorized else { return }
-                self.loadingIndicator.stopAnimating()
-                self.loadingIndicator.isHidden = true
-                self.qrContainerView.isHidden = true
-                self.passwordView.isHidden = true
-                self.statusLabel.text = "Авторизация успешна ✓"
-                self.statusLabel.textColor = UIColor(red: 0.3, green: 0.8, blue: 0.4, alpha: 1)
+                guard let self else { return }
                 
-                self.loadingIndicator.isHidden = false
-                self.loadingIndicator.startAnimating()
-                
-                DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                if isAuthorized {
                     self.loadingIndicator.stopAnimating()
                     self.loadingIndicator.isHidden = true
+                    self.qrContainerView.isHidden = true
+                    self.passwordView.isHidden = true
+                    self.statusLabel.isHidden = false
+                    self.statusLabel.text = "Авторизация успешна ✓"
+                    self.statusLabel.textColor = UIColor(red: 0.3, green: 0.8, blue: 0.4, alpha: 1)
+                    
+                    self.loadingIndicator.isHidden = false
+                    self.loadingIndicator.startAnimating()
+                    
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                        self.loadingIndicator.stopAnimating()
+                        self.loadingIndicator.isHidden = true
+                    }
+                } else {
+                    // Сброс UI при выходе, чтобы не застревать на экране успеха
+                    self.statusLabel.text = "Подготовка..."
+                    self.statusLabel.textColor = UIColor(white: 0.7, alpha: 1)
+                    self.statusLabel.isHidden = false
+                    self.qrContainerView.isHidden = true
+                    self.passwordView.isHidden = true
+                    self.loadingIndicator.isHidden = false
+                    self.loadingIndicator.startAnimating()
+                    
+                    // Запрашиваем актуальное состояние авторизации и QR
+                    Task { @MainActor in
+                        await self.authService.checkAuthState()
+                    }
                 }
             }
             .store(in: &cancellables)

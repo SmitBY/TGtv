@@ -1,6 +1,11 @@
 import UIKit
 import TDLibKit
 import Combine
+import Foundation
+
+extension Foundation.Notification.Name {
+    static let tgFileUpdated = Foundation.Notification.Name("tg.file.updated")
+}
 
 // Расширение для ручной обработки JSON от TDLib
 extension TDLibKit.Update {
@@ -65,7 +70,6 @@ extension TDLibKit.Update {
             case "userStatusEmpty":
                  userStatus = .userStatusEmpty // Без .init()
             default:
-                print("Update.fromRawJSON: Необработанный тип userStatus: \(statusType)")
                 return nil
             }
             return .updateUserStatus(.init(status: userStatus, userId: userId))
@@ -211,10 +215,9 @@ extension TDLibKit.Update {
                 case "userStatusLastWeek":
                      status = .userStatusLastWeek(.init(byMyPrivacySettings: (statusJson["by_my_privacy_settings"] as? Bool ?? false)))
                 case "userStatusLastMonth":
-                     status = .userStatusLastMonth(.init(byMyPrivacySettings: (statusJson["by_my_privacy_settings"] as? Bool ?? false)))
+                    status = .userStatusLastMonth(.init(byMyPrivacySettings: (statusJson["by_my_privacy_settings"] as? Bool ?? false)))
                 default:
-                    print("Update.fromRawJSON: Необработанный тип userStatus: \(statusType)")
-                    // Оставляем .userStatusEmpty по умолчанию
+                    break // Оставляем .userStatusEmpty по умолчанию
                 }
             }
 
@@ -263,7 +266,7 @@ extension TDLibKit.Update {
                 case "userTypeUnknown":
                     userType = .userTypeUnknown
                 default:
-                    print("Update.fromRawJSON: Необработанный UserType: \(userTypeString)")
+                    break
                 }
             }
             
@@ -310,7 +313,6 @@ extension TDLibKit.Update {
             if let supergroup = parseSupergroup(fromJson: supergroupJson) {
                 return .updateSupergroup(.init(supergroup: supergroup))
             } else {
-                print("Update.fromRawJSON: Не удалось распарсить Supergroup вручную.")
                 return nil // Позволяем Codable попробовать снова или возвращаем ошибку
             }
         }
@@ -318,12 +320,11 @@ extension TDLibKit.Update {
         // Обработка обновления нового чата (полный ручной парсинг)
         if type == "updateNewChat",
            let chatJson = json["chat"] as? [String: Any] {
-             if let chat = parseChat(fromJson: chatJson) {
-                 return .updateNewChat(.init(chat: chat))
-             } else {
-                 print("Update.fromRawJSON: Не удалось распарсить Chat вручную.")
-                 return nil // Позволяем Codable попробовать снова или возвращаем ошибку
-             }
+            if let chat = parseChat(fromJson: chatJson) {
+                return .updateNewChat(.init(chat: chat))
+            } else {
+                return nil // Позволяем Codable попробовать снова или возвращаем ошибку
+            }
         }
         
         return nil
@@ -488,15 +489,75 @@ extension TDLibKit.Update {
 
     private static func parseChatMemberStatus(fromJson json: [String: Any]) -> ChatMemberStatus? {
         guard let type = json["@type"] as? String else { return nil }
-        // TODO: Реализовать парсинг для разных ChatMemberStatus (member, administrator, owner, etc.)
         switch type {
         case "chatMemberStatusMember":
              return .chatMemberStatusMember(.init(memberUntilDate: json["member_until_date"] as? Int ?? 0))
         case "chatMemberStatusLeft":
              return .chatMemberStatusLeft
-        // Добавьте другие статусы по мере необходимости
+        case "chatMemberStatusCreator":
+            let customTitle = json["custom_title"] as? String ?? ""
+            let isAnonymous = json["is_anonymous"] as? Bool ?? false
+            let isMember = json["is_member"] as? Bool ?? true
+            return .chatMemberStatusCreator(.init(
+                customTitle: customTitle,
+                isAnonymous: isAnonymous,
+                isMember: isMember
+            ))
+        case "chatMemberStatusAdministrator":
+            let canBeEdited = json["can_be_edited"] as? Bool ?? false
+            let customTitle = json["custom_title"] as? String ?? ""
+            let rightsJson = json["rights"] as? [String: Any]
+            let rights = ChatAdministratorRights(
+                canChangeInfo: rightsJson?["can_change_info"] as? Bool ?? false,
+                canDeleteMessages: rightsJson?["can_delete_messages"] as? Bool ?? false,
+                canDeleteStories: rightsJson?["can_delete_stories"] as? Bool ?? false,
+                canEditMessages: rightsJson?["can_edit_messages"] as? Bool ?? false,
+                canEditStories: rightsJson?["can_edit_stories"] as? Bool ?? false,
+                canInviteUsers: rightsJson?["can_invite_users"] as? Bool ?? false,
+                canManageChat: rightsJson?["can_manage_chat"] as? Bool ?? false,
+                canManageTopics: rightsJson?["can_manage_topics"] as? Bool ?? false,
+                canManageVideoChats: rightsJson?["can_manage_video_chats"] as? Bool ?? false,
+                canPinMessages: rightsJson?["can_pin_messages"] as? Bool ?? false,
+                canPostMessages: rightsJson?["can_post_messages"] as? Bool ?? false,
+                canPostStories: rightsJson?["can_post_stories"] as? Bool ?? false,
+                canPromoteMembers: rightsJson?["can_promote_members"] as? Bool ?? false,
+                canRestrictMembers: rightsJson?["can_restrict_members"] as? Bool ?? false,
+                isAnonymous: rightsJson?["is_anonymous"] as? Bool ?? false
+            )
+            return .chatMemberStatusAdministrator(.init(
+                canBeEdited: canBeEdited,
+                customTitle: customTitle,
+                rights: rights
+            ))
+        case "chatMemberStatusRestricted":
+            let isMember = json["is_member"] as? Bool ?? false
+            let restrictedUntilDate = json["restricted_until_date"] as? Int ?? 0
+            let permissionsJson = json["permissions"] as? [String: Any]
+            let permissions = permissionsJson.flatMap { parseChatPermissions(fromJson: $0) } ?? ChatPermissions(
+                canAddLinkPreviews: false,
+                canChangeInfo: false,
+                canCreateTopics: false,
+                canInviteUsers: false,
+                canPinMessages: false,
+                canSendAudios: false,
+                canSendBasicMessages: false,
+                canSendDocuments: false,
+                canSendOtherMessages: false,
+                canSendPhotos: false,
+                canSendPolls: false,
+                canSendVideoNotes: false,
+                canSendVideos: false,
+                canSendVoiceNotes: false
+            )
+            return .chatMemberStatusRestricted(.init(
+                isMember: isMember,
+                permissions: permissions,
+                restrictedUntilDate: restrictedUntilDate
+            ))
+        case "chatMemberStatusBanned":
+            let bannedUntilDate = json["banned_until_date"] as? Int ?? 0
+            return .chatMemberStatusBanned(.init(bannedUntilDate: bannedUntilDate))
         default:
-            print("parseChatMemberStatus: Неизвестный тип \(type)")
             return nil
         }
     }
@@ -920,7 +981,12 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     private var authService: AuthService?
     private var chatListViewModel: ChatListViewModel?
     private var cancellables = Set<AnyCancellable>()
-    private(set) var messagesViewController: MessagesViewController?
+    private var navigationController: UINavigationController?
+    private let selectedChatsStore = SelectedChatsStore()
+    // Последовательная очередь для обработки обновлений TDLib, чтобы избежать одновременных вызовов receive
+    private let tdUpdateQueue = DispatchQueue(label: "tgtd.updates.queue")
+    // Защита от повторного/параллельного перезапуска auth flow
+    private var isRestartingAuthFlow = false
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
         print("AppDelegate: Запуск приложения")
@@ -956,35 +1022,35 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         print("AppDelegate: Создание контроллеров")
         if let authService = authService, let chatListViewModel = chatListViewModel {
             let authVC = AuthQRController(authService: authService)
-            let chatListVC = ChatListViewController(viewModel: chatListViewModel)
+            let chatListVC = makeChatSelectionController(viewModel: chatListViewModel)
             let navigationController = UINavigationController()
-            navigationController.isNavigationBarHidden = true
-            
+            navigationController.isNavigationBarHidden = false
+            self.navigationController = navigationController
+
             // Устанавливаем начальный экран в зависимости от состояния авторизации
             Task { @MainActor in
                 let isAuthorized = authService.isAuthorized
-                if isAuthorized {
-                    navigationController.setViewControllers([chatListVC], animated: false)
-                } else {
-                    navigationController.setViewControllers([authVC], animated: false)
-                }
+                self.setInitialStack(nav: navigationController, isAuthorized: isAuthorized, authVC: authVC, chatSelectionVC: chatListVC)
             }
             
             authService.$isAuthorized
                 .removeDuplicates()
                 .receive(on: DispatchQueue.main)
-                .sink { [navigationController, chatListVC, authVC] isAuthorized in
-                    if isAuthorized {
-                        // При успешной авторизации сразу переходим к списку чатов
-                        navigationController.setViewControllers([chatListVC], animated: true)
-                    } else {
-                        navigationController.setViewControllers([authVC], animated: true)
-                    }
+                .sink { [weak self, navigationController, authVC] isAuthorized in
+                    guard let self else { return }
+                    self.handleAuthStateChange(isAuthorized: isAuthorized, navigationController: navigationController, authVC: authVC)
                 }
                 .store(in: &cancellables)
             
             window?.rootViewController = navigationController
             window?.makeKeyAndVisible()
+            
+#if targetEnvironment(macCatalyst)
+            // Перестраиваем системное меню после появления окна
+            Task { @MainActor in
+                UIMenuSystem.main.setNeedsRebuild()
+            }
+#endif
             
             // Запускаем проверку состояния авторизации только при начальной загрузке
             Task {
@@ -993,7 +1059,6 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
                 }
             }
         } else {
-            print("AppDelegate: Ошибка - сервисы не инициализированы")
             return false
         }
         
@@ -1001,82 +1066,85 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     }
 
     private func setupTDLibClient() {
-        clientManager = TDLibClientManager()
+        // Важно: TDLibKit требует ОДИН TDLibClientManager на приложение.
+        // Он владеет единственным receive-loop (td_receive) и не должен создаваться повторно.
+        if clientManager == nil {
+            clientManager = TDLibClientManager()
+        }
         client = clientManager?.createClient(updateHandler: { [weak self] (data: Data, client: TDLibClient) in
-            let jsonString = String(data: data, encoding: .utf8) ?? ""
-            
-            // Для отладки выводим только важные обновления
-            if !jsonString.contains("@type\":\"updateOption") {
-                print("AppDelegate: Сырые данные: \(jsonString)")
+            // Гарантируем, что обработка обновлений выполняется последовательно на одной очереди
+            self?.tdUpdateQueue.async { [weak self] in
+                self?.handleUpdateData(data, client: client)
             }
+        })
+    }
+    
+    // Вынесенная обработка данных обновления, выполняется на последовательной очереди
+    private func handleUpdateData(_ data: Data, client: TDLibClient) {
+        let jsonString = String(data: data, encoding: .utf8) ?? ""
+        
+        // Пробуем сначала использовать ручной парсинг для известных типов обновлений
+        if let update = Update.fromRawJSON(data) {
+            self.process(update: update)
+            return
+        }
+        
+        // Если ручной парсинг не сработал, пробуем автоматический декодер
+        do {
+            let decoder = JSONDecoder()
+            decoder.keyDecodingStrategy = .convertFromSnakeCase
+            let update = try decoder.decode(TDLibKit.Update.self, from: data)
+            self.process(update: update)
+        } catch {
+            // Проверяем тип ошибки и контент JSON для принятия решения
+            let errorDescription = "\(error)"
             
-            // Пробуем сначала использовать ручной парсинг для известных типов обновлений
-            if let update = Update.fromRawJSON(data) {
-                print("AppDelegate: Получено обновление через ручной парсинг: \(update)")
-                
-                self?.process(update: update)
+            if let fallbackUpdate = self.makeFallbackUpdate(from: data) {
+                self.process(update: fallbackUpdate)
                 return
             }
             
-            // Если ручной парсинг не сработал, пробуем автоматический декодер
-            do {
-                let decoder = JSONDecoder()
-                decoder.keyDecodingStrategy = .convertFromSnakeCase
-                let update = try decoder.decode(TDLibKit.Update.self, from: data)
+            // Пропускаем известные безопасные ошибки
+            let safeToPropagateError = (
+                jsonString.contains("\"@type\":\"updateFile\"") ||
+                jsonString.contains("\"@type\":\"updateConnectionState\"") ||
+                // Игнорируем ошибки keyNotFound для chatId
+                errorDescription.contains("keyNotFound(CodingKeys(stringValue: \"chatId\"")
+            )
+            
+            if safeToPropagateError {
+                print("AppDelegate: Игнорируем безопасную ошибку декодирования: \(error)")
+            } else {
+                print("AppDelegate: Ошибка декодирования обновления: \(error)")
                 
-                // Для отладки выводим только важные обновления
-                if !String(describing: update).contains("updateOption") {
-                    print("AppDelegate: Получено обновление через Codable: \(update)")
-                }
-                
-                self?.process(update: update)
-            } catch {
-                // Проверяем тип ошибки и контент JSON для принятия решения
-                let errorDescription = "\(error)"
-                
-                if let fallbackUpdate = self?.makeFallbackUpdate(from: data) {
-                    self?.process(update: fallbackUpdate)
-                    return
-                }
-                
-                // Пропускаем известные безопасные ошибки
-                let safeToPropagateError = (
-                    jsonString.contains("\"@type\":\"updateFile\"") ||
-                    jsonString.contains("\"@type\":\"updateConnectionState\"") ||
-                    // Игнорируем ошибки keyNotFound для chatId
-                    errorDescription.contains("keyNotFound(CodingKeys(stringValue: \"chatId\"")
-                )
-                
-                if safeToPropagateError {
-                    print("AppDelegate: Игнорируем безопасную ошибку декодирования: \(error)")
-                } else {
-                    print("AppDelegate: Ошибка декодирования обновления: \(error)")
-                    
-                    // Для других ошибок проверяем авторизацию
-                    Task { @MainActor in
-                        await self?.authService?.checkAuthState()
-                    }
+                // Для других ошибок проверяем авторизацию
+                Task { @MainActor in
+                    await self.authService?.checkAuthState()
                 }
             }
-        })
+        }
     }
     
     private func process(update: TDLibKit.Update) {
         Task { @MainActor [weak self] in
             guard let self else { return }
+            if case let TDLibKit.Update.updateAuthorizationState(stateUpdate) = update {
+                print("AppDelegate: updateAuthorizationState = \(stateUpdate.authorizationState)")
+            }
             self.authService?.handleUpdate(update)
             
-            if let messagesVC = self.messagesViewController,
-               messagesVC.isViewLoaded && messagesVC.view.window != nil {
-                if case let TDLibKit.Update.updateAuthorizationState(stateUpdate) = update,
-                   case .authorizationStateLoggingOut = stateUpdate.authorizationState {
-                    self.chatListViewModel?.handleUpdate(update)
-                }
-                messagesVC.handleUpdate(update)
-            } else {
-                self.chatListViewModel?.handleUpdate(update)
-                self.messagesViewController?.handleUpdate(update)
+            if case let TDLibKit.Update.updateFile(fileUpdate) = update {
+                NotificationCenter.default.post(name: .tgFileUpdated, object: fileUpdate.file)
             }
+            
+            if case let TDLibKit.Update.updateAuthorizationState(stateUpdate) = update,
+               case .authorizationStateClosed = stateUpdate.authorizationState {
+                print("AppDelegate: Получено состояние Closed, перезапускаем клиент и UI")
+                self.restartAuthFlow()
+                return
+            }
+            
+            self.chatListViewModel?.handleUpdate(update)
         }
     }
     
@@ -1108,36 +1176,6 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         }
     }
 
-    // Упрощенный метод установки MessagesViewController
-    func setMessagesViewController(_ controller: MessagesViewController?) {
-        // Просто устанавливаем ссылку и логируем
-        if messagesViewController !== controller {
-            if controller == nil {
-                print("AppDelegate: Установка messagesViewController в nil")
-                
-                // Проверяем, что установка nil не случилась во время загрузки сообщений
-                if let currentVC = messagesViewController, currentVC.isLoading {
-                    print("AppDelegate: ⚠️ Предотвращение установки nil во время загрузки сообщений для чата \(currentVC.chatId)")
-                    return // Не сбрасываем ссылку, если загрузка идет
-                }
-                
-                messagesViewController = controller
-            } else {
-                print("AppDelegate: Установка messagesViewController на новый экземпляр для чата \(controller?.chatId ?? 0)")
-                
-                // Проверяем и предотвращаем замену существующего контроллера, если он в процессе загрузки
-                if let currentVC = messagesViewController, currentVC.isLoading, currentVC !== controller {
-                    print("AppDelegate: ⚠️ Предотвращение замены контроллера во время загрузки сообщений для чата \(currentVC.chatId)")
-                    return // Не меняем ссылку, если загрузка идет
-                }
-                
-                messagesViewController = controller
-            }
-        } else {
-             print("AppDelegate: Игнорирование вызова setMessagesViewController с тем же контроллером")
-        }
-    }
-    
     // Проверка, не происходит ли сейчас смена авторизации
     private func isChangingAuthState() -> Bool {
         // Защита от nil
@@ -1146,6 +1184,224 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             return false 
         }
         return service.isChangingAuthState
+    }
+    
+    override func buildMenu(with builder: UIMenuBuilder) {
+        super.buildMenu(with: builder)
+        guard builder.system == .main else { return }
+        
+        let settingsAction = UIAction(title: "Настройки…") { [weak self] _ in
+            self?.openSettings()
+        }
+        let settingsMenu = UIMenu(title: "", options: .displayInline, children: [settingsAction])
+        builder.insertChild(settingsMenu, atStartOfMenu: .application)
+    }
+
+    @objc
+    func openSettings() {
+        guard let nav = navigationController else {
+            print("AppDelegate: Нет navigationController для показа настроек")
+            return
+        }
+        let settingsVC = SettingsViewController()
+        nav.pushViewController(settingsVC, animated: true)
+    }
+
+    func openChatSelectionFromMenu(resetToRoot: Bool = true) {
+        guard let client else { return }
+        guard let nav = navigationController else { return }
+        let selectionVC = makeChatSelectionController(viewModel: chatListViewModel ?? ChatListViewModel(client: client))
+        if resetToRoot {
+            nav.popToRootViewController(animated: false)
+        }
+        nav.pushViewController(selectionVC, animated: true)
+    }
+
+    func logoutFromMenu() {
+        guard let authService else {
+            print("AppDelegate: authService отсутствует, выход невозможен")
+            return
+        }
+        
+        Task {
+            await authService.logout()
+            await MainActor.run { [weak self] in
+                self?.selectedChatsStore.clear()
+            }
+        }
+    }
+    
+    private func topViewController(base: UIViewController? = nil) -> UIViewController? {
+        let baseController = base ?? window?.rootViewController
+        
+        if let navigationController = baseController as? UINavigationController {
+            return topViewController(base: navigationController.visibleViewController)
+        }
+        
+        if let tabController = baseController as? UITabBarController, let selected = tabController.selectedViewController {
+            return topViewController(base: selected)
+        }
+        
+        if let presented = baseController?.presentedViewController {
+            return topViewController(base: presented)
+        }
+        
+        return baseController
+    }
+
+    private func handleAuthStateChange(isAuthorized: Bool, navigationController: UINavigationController, authVC: AuthQRController) {
+        if isAuthorized {
+            if selectedChatsStore.hasCompletedSelection {
+                navigationController.setViewControllers([makeHomeController()], animated: true)
+            } else {
+                navigationController.setViewControllers([makeChatSelectionController(viewModel: chatListViewModel!)], animated: true)
+            }
+        } else {
+            navigationController.setViewControllers([authVC], animated: true)
+        }
+    }
+
+    @MainActor
+    private func restartAuthFlow() {
+        guard !isRestartingAuthFlow else { return }
+        isRestartingAuthFlow = true
+
+        print("AppDelegate: Пересоздаем TDLib клиент и сервисы после выхода")
+        cancellables.removeAll()
+        let oldClient = client
+        client = nil
+
+        // Закрываем старый client неблокирующе (TDLib close иногда может подвиснуть),
+        // и в любом случае продолжаем пересоздание после таймаута.
+        Task { [weak self] in
+            if let oldClient {
+                await self?.closeClientWithTimeout(oldClient, timeoutSeconds: 2.0)
+            }
+            await MainActor.run { [weak self] in
+                self?.finishRestartAuthFlow()
+            }
+        }
+    }
+
+    private func closeClientWithTimeout(_ client: TDLibClient, timeoutSeconds: TimeInterval) async {
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask {
+                await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                    do {
+                        try client.close(completion: { _ in
+                            cont.resume()
+                        })
+                    } catch {
+                        cont.resume()
+                    }
+                }
+            }
+            group.addTask {
+                let ns = UInt64(timeoutSeconds * 1_000_000_000)
+                try? await Task.sleep(nanoseconds: ns)
+            }
+            await group.next()
+            group.cancelAll()
+        }
+    }
+
+    @MainActor
+    private func finishRestartAuthFlow() {
+        defer { isRestartingAuthFlow = false }
+
+        print("AppDelegate: finishRestartAuthFlow()")
+        setupTDLibClient()
+
+        guard let client else {
+            print("AppDelegate: Клиент не создан при перезапуске")
+            return
+        }
+
+        authService = AuthService(client: client)
+        chatListViewModel = ChatListViewModel(client: client)
+
+        guard let authService, let chatListViewModel else { return }
+
+        let authVC = AuthQRController(authService: authService)
+        let chatListVC = makeChatSelectionController(viewModel: chatListViewModel)
+
+        let nav = navigationController ?? UINavigationController()
+        nav.isNavigationBarHidden = false
+        navigationController = nav
+        window?.rootViewController = nav
+        window?.makeKeyAndVisible()
+
+        // После logout всегда показываем QR-экран (isAuthorized сейчас false),
+        // и запускаем auth-flow без троттлинга, чтобы TDLib гарантированно выдал новый QR.
+        nav.setViewControllers([authVC], animated: false)
+        Task { await authService.startAuthFlow(force: true) }
+
+        authService.$isAuthorized
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self, weak nav, weak authVC] isAuthorized in
+                guard let self, let nav, let authVC else { return }
+                self.handleAuthStateChange(isAuthorized: isAuthorized, navigationController: nav, authVC: authVC)
+            }
+            .store(in: &cancellables)
+
+        // На случай, если пользователь был авторизован и быстро вернулся — восстановим корректный стек.
+        if authService.isAuthorized {
+            if selectedChatsStore.hasCompletedSelection {
+                nav.setViewControllers([makeHomeController()], animated: false)
+            } else {
+                nav.setViewControllers([chatListVC], animated: false)
+            }
+        }
+    }
+
+    private func setInitialStack(nav: UINavigationController, isAuthorized: Bool, authVC: AuthQRController, chatSelectionVC: ChatListViewController) {
+        if isAuthorized {
+            if selectedChatsStore.hasCompletedSelection {
+                nav.setViewControllers([makeHomeController()], animated: false)
+            } else {
+                nav.setViewControllers([chatSelectionVC], animated: false)
+            }
+        } else {
+            nav.setViewControllers([authVC], animated: false)
+        }
+    }
+
+    private func makeHomeController() -> UIViewController {
+        guard let client else { return UIViewController() }
+        return HomeViewController(client: client, selectedChatsStore: selectedChatsStore, openSelection: { [weak self] in
+            guard let self, let nav = self.navigationController else { return }
+            let selectionVC = self.makeChatSelectionController(viewModel: self.chatListViewModel ?? ChatListViewModel(client: client))
+            nav.pushViewController(selectionVC, animated: true)
+        }, openSettings: { [weak self] in
+            self?.openSettings()
+        })
+    }
+
+    private func makeChatSelectionController(viewModel: ChatListViewModel) -> ChatListViewController {
+        let vc = ChatListViewController(
+            viewModel: viewModel,
+            selectedChats: Set(selectedChatsStore.load()),
+            onSaveSelection: { [weak self] ids in
+                guard let self else { return }
+                guard !ids.isEmpty else {
+                    self.selectedChatsStore.clear()
+                    return
+                }
+                
+                let wasCompleted = self.selectedChatsStore.hasCompletedSelection
+                self.selectedChatsStore.save(ids: Array(ids))
+                
+                if !wasCompleted {
+                    self.selectedChatsStore.markCompleted()
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self, let nav = self.navigationController else { return }
+                        nav.setViewControllers([self.makeHomeController()], animated: true)
+                    }
+                }
+            }
+        )
+        return vc
     }
 
     // ... existing code ...

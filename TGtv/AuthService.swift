@@ -10,6 +10,7 @@ class AuthService {
     @Published var needPassword = false
     @Published var passwordHint: String = ""
     private var isSettingParameters = false
+    private var isRequestingQR = false
     @Published var isChangingAuthState = false
     private var chatLoadRetryCount = 0
     private var maxChatLoadRetries = 3
@@ -18,58 +19,49 @@ class AuthService {
     private var minStateCheckInterval: TimeInterval = 1.0  // минимальный интервал между проверками состояния в секундах
     
     init(client: TDLibClient) {
-        print("AuthService: Инициализация")
         self.client = client
     }
     
     func handleUpdate(_ update: Update) {
-        print("AuthService: Обработка обновления: \(update)")
-        
         switch update {
         case .updateAuthorizationState(let state):
             isChangingAuthState = true
             handleAuthStateUpdate(state.authorizationState)
             isChangingAuthState = false
-        case .updateOption:
-            print("AuthService: Получено обновление опций")
-        case .updateChatPosition:
-            print("AuthService: Получено обновление позиции чата, игнорируется в AuthService")
+        //case .updateOption:
+            //print("AuthService: Получено обновление опций")
+        //case .updateChatPosition:
+        //    //print("AuthService: Получено обновление позиции чата, игнорируется в AuthService")
         default:
-            print("AuthService: Необработанное обновление: \(update)")
+            break
         }
     }
     
     private func handleAuthStateUpdate(_ state: AuthorizationState) {
-        print("AuthService: Получено состояние авторизации: \(state)")
-        
+        // Логируем ключевые состояния — это помогает понять, почему TDLib закрывается/не доходит до QR.
+        print("AuthService: authorizationState = \(state)")
+
         switch state {
         case .authorizationStateWaitTdlibParameters:
-            if !isSettingParameters && !isAuthorized {
-                print("AuthService: Установка параметров TDLib")
-                isSettingParameters = true
-                Task {
-                    await setupTDLib()
-                }
+            if !isAuthorized {
+                Task { await setupTDLib() }
             }
         case .authorizationStateWaitPhoneNumber:
-            print("AuthService: Запрос QR кода")
             if !isAuthorized {
-                Task {
-                    await startQRAuth()
-                }
+                Task { await startQRAuth() }
             }
         case .authorizationStateWaitOtherDeviceConfirmation(let data):
-            print("AuthService: Получен QR код")
             qrCodeUrl = data.link
             needPassword = false
+            isRequestingQR = false
         case .authorizationStateWaitPassword(let data):
-            print("AuthService: Требуется ввод пароля")
             passwordHint = data.passwordHint
             qrCodeUrl = nil
             needPassword = true
+            isRequestingQR = false
         case .authorizationStateReady:
-            print("AuthService: Авторизация успешна")
             needPassword = false
+            isRequestingQR = false
             if !isAuthorized {
                 isAuthorized = true
             }
@@ -78,46 +70,43 @@ class AuthService {
                 Task {
                     do {
                         isChatLoadingInProgress = true
-                        print("AuthService: Загрузка чатов (попытка \(chatLoadRetryCount + 1)/\(maxChatLoadRetries))")
                         try await client.loadChats(chatList: .chatListMain, limit: 20)
                         chatLoadRetryCount = 0
                     } catch {
-                        print("AuthService: Ошибка загрузки чатов: \(error)")
                         chatLoadRetryCount += 1
                         
                         if chatLoadRetryCount >= maxChatLoadRetries {
-                            print("AuthService: Достигнуто максимальное количество попыток загрузки чатов")
+                            // достигли лимита попыток
                         }
                     }
                     isChatLoadingInProgress = false
                 }
             }
         case .authorizationStateLoggingOut:
-            print("AuthService: Выполняется выход")
             if isAuthorized {
                 isAuthorized = false
             }
+            isRequestingQR = false
         case .authorizationStateClosing:
-            print("AuthService: Закрытие соединения")
             if isAuthorized {
                 isAuthorized = false
             }
+            isRequestingQR = false
         case .authorizationStateClosed:
-            print("AuthService: Соединение закрыто")
             if isAuthorized {
                 isAuthorized = false
             }
-            Task {
-                await checkAuthState()
-            }
+            isRequestingQR = false
         default:
-            print("AuthService: Неизвестное состояние: \(state)")
+            break
         }
     }
     
     private func setupTDLib() async {
-        print("AuthService: Настройка TDLib")
-        
+        guard !isSettingParameters else { return }
+        isSettingParameters = true
+        defer { isSettingParameters = false }
+
         do {
             _ = try? await client.setLogVerbosityLevel(newVerbosityLevel: 1)
             let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].path
@@ -132,13 +121,14 @@ class AuthService {
                 try FileManager.default.createDirectory(atPath: filesPath, withIntermediateDirectories: true)
             }
             
-            print("AuthService: Отправка параметров TDLib")
             try await client.setTdlibParameters(
                 apiHash: "a3406de8d171bb422bb6ddf3bbd800e2",
                 apiId: 94575,
                 applicationVersion: "1.0",
                 databaseDirectory: databasePath,
-                databaseEncryptionKey: Data(),
+                // TDLib ожидает либо пустой ключ (без шифрования), либо 32 байта.
+                // Используем 32 байта нулей для предсказуемого поведения между запусками.
+                databaseEncryptionKey: Data(repeating: 0, count: 32),
                 deviceModel: "Apple tvOS",
                 filesDirectory: filesPath,
                 systemLanguageCode: "ru",
@@ -149,31 +139,28 @@ class AuthService {
                 useSecretChats: true,
                 useTestDc: false
             )
-            print("AuthService: Параметры TDLib установлены")
         } catch {
-            print("AuthService: Ошибка установки параметров: \(error)")
+            print("AuthService: Ошибка setupTDLib: \(error)")
         }
-        
-        isSettingParameters = false
     }
     
     private func startQRAuth() async {
-        print("AuthService: Запуск QR авторизации")
+        guard !isRequestingQR else { return }
+        isRequestingQR = true
+        defer { isRequestingQR = false }
+
         do {
             try await client.requestQrCodeAuthentication(otherUserIds: [])
-            print("AuthService: Запрос QR кода отправлен успешно")
         } catch {
-            print("AuthService: Ошибка запроса QR кода: \(error)")
+            print("AuthService: Ошибка requestQrCodeAuthentication: \(error)")
         }
     }
     
     func checkPassword(_ password: String) async -> Bool {
-        print("AuthService: Проверка пароля")
         do {
             try await client.checkAuthenticationPassword(password: password)
             return true
         } catch {
-            print("AuthService: Ошибка проверки пароля: \(error)")
             return false
         }
     }
@@ -182,42 +169,91 @@ class AuthService {
         let currentTime = Date().timeIntervalSince1970
         // Проверяем, что прошло достаточно времени с последней проверки
         guard currentTime - lastAuthStateCheck >= minStateCheckInterval else {
-            print("AuthService: Слишком частая проверка состояния авторизации, пропускаем")
             return
         }
         
-        print("AuthService: Проверка состояния авторизации")
         lastAuthStateCheck = currentTime
         isChangingAuthState = true
         do {
             let state = try await client.getAuthorizationState()
-            print("AuthService: Текущее состояние: \(state)")
             handleAuthStateUpdate(state)
         } catch {
-            print("AuthService: Ошибка получения состояния: \(error)")
+            print("AuthService: Ошибка getAuthorizationState: \(error)")
+        }
+        isChangingAuthState = false
+    }
+
+    /// Принудительно запускает auth-flow и пытается довести до получения QR/пароля без троттлинга.
+    /// Нужен после logout/restart клиента, когда UI уже на экране авторизации, но TDLib ещё не прислал link.
+    func startAuthFlow(force: Bool = true) async {
+        if isChangingAuthState && !force { return }
+        isChangingAuthState = true
+        defer { isChangingAuthState = false }
+
+        // Сбрасываем UI-состояния — иначе можно застрять на старом состоянии.
+        qrCodeUrl = nil
+        needPassword = false
+        passwordHint = ""
+
+        // Несколько попыток: TDLib может сначала вернуть WaitTdlibParameters, затем WaitPhoneNumber и т.д.
+        for attempt in 1...6 {
+            do {
+                let state = try await client.getAuthorizationState()
+                handleAuthStateUpdate(state)
+
+                switch state {
+                case .authorizationStateWaitTdlibParameters:
+                    // setupTDLib запускается из handleAuthStateUpdate и защищён флагом isSettingParameters
+                    break
+                case .authorizationStateWaitPhoneNumber:
+                    // requestQrCodeAuthentication запускается из handleAuthStateUpdate и защищён флагом isRequestingQR
+                    return
+                case .authorizationStateWaitOtherDeviceConfirmation:
+                    // link будет установлен в handleAuthStateUpdate
+                    return
+                case .authorizationStateWaitPassword:
+                    return
+                case .authorizationStateReady:
+                    return
+                case .authorizationStateClosing, .authorizationStateClosed, .authorizationStateLoggingOut:
+                    // Дадим TDLib время завершить переходы
+                    break
+                default:
+                    break
+                }
+            } catch {
+                print("AuthService: Ошибка startAuthFlow (attempt \(attempt)): \(error)")
+            }
+
+            try? await Task.sleep(nanoseconds: 300_000_000) // 0.3s
+        }
+    }
+    
+    func logout() async {
+        guard !isChangingAuthState else {
+            return
+        }
+        
+        isChangingAuthState = true
+        do {
+            try await client.logOut()
+            isAuthorized = false
+        } catch {
+            print("AuthService: Ошибка logOut: \(error)")
         }
         isChangingAuthState = false
     }
     
     private func loadChats() {
-        print("AuthService: Загрузка чатов...")
-        
         Task {
             do {
                 try await client.loadChats(
                     chatList: .chatListMain,
                     limit: 20
                 )
-                print("AuthService: Чаты успешно загружены")
             } catch let error as TDLibKit.Error {
-                if error.code == 404 {
-                    print("AuthService: Чат-лист пуст, это нормально при первом запуске")
-                    return
-                }
-                print("AuthService: Ошибка загрузки чатов: \(error)")
-            } catch {
-                print("AuthService: Неизвестная ошибка загрузки чатов: \(error)")
-            }
+                if error.code == 404 { return }
+            } catch { }
         }
     }
 } 

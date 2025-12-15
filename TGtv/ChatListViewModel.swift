@@ -44,12 +44,7 @@ final class ChatListViewModel: ObservableObject {
     
     @MainActor
     func handleUpdate(_ update: TDLibKit.Update) {
-        print("ChatListViewModel: Получено обновление \(type(of: update))")
-        
-        // Если у нас есть чаты и прошло более 5 секунд с момента загрузки,
-        // но isLoading все еще true, сбрасываем это состояние
         if !cachedChats.isEmpty && isLoading && hasLoadedChatsOnce {
-            print("ChatListViewModel: Обнаружено зависшее состояние загрузки, сбрасываем")
             isLoading = false
             loadingProgress = ""
         }
@@ -57,7 +52,6 @@ final class ChatListViewModel: ObservableObject {
         switch update {
         case .updateAuthorizationState(let stateUpdate):
             let newState = stateUpdate.authorizationState
-            print("ChatListViewModel: .updateAuthorizationState, новое состояние: \(newState)")
             switch newState {
             case .authorizationStateReady:
                 // Загружаем чаты только при первой авторизации, если еще не загружали
@@ -70,11 +64,9 @@ final class ChatListViewModel: ObservableObject {
                 break
             }
         case .updateNewChat(let update):
-            print("ChatListViewModel: Получен новый чат: \(update.chat.title)")
             upsertChat(update.chat)
             scheduleChatsUpdate()
         case .updateChatLastMessage(let update):
-            print("ChatListViewModel: Обновлено последнее сообщение для чата \(update.chatId)")
             if let index = cachedChats.firstIndex(where: { $0.id == update.chatId }) {
                 // Создаем новый экземпляр Chat с обновленным lastMessage
                 let updatedChat = cachedChats[index]
@@ -125,7 +117,6 @@ final class ChatListViewModel: ObservableObject {
                 scheduleChatsUpdate()
             }
         case .updateChatPosition(let chatPositionUpdate):
-            print("ChatListViewModel: Получено обновление позиции чата для \(chatPositionUpdate.chatId). Не перезагружаем список чатов.")
             // Обновляем только позицию чата, если он уже есть в кеше
             if let index = cachedChats.firstIndex(where: { $0.id == chatPositionUpdate.chatId }) {
                 // Получаем обновленный список позиций
@@ -181,14 +172,8 @@ final class ChatListViewModel: ObservableObject {
                 upsertChat(newChat)
                 scheduleChatsUpdate()
             }
-            // Не перезагружаем чаты после первой загрузки
-            /* 
-            Task {
-                try? await loadChats()
-            }
-            */
+            
         case .updateChatPhoto(let update):
-            print("ChatListViewModel: Обновлено фото чата \(update.chatId)")
             if let index = cachedChats.firstIndex(where: { $0.id == update.chatId }) {
                 let updatedChat = cachedChats[index]
                 let newChat = TDLibKit.Chat(
@@ -238,7 +223,6 @@ final class ChatListViewModel: ObservableObject {
                 scheduleChatsUpdate()
             }
         case .updateChatTitle(let update):
-            print("ChatListViewModel: Обновлено название чата \(update.chatId)")
             if let index = cachedChats.firstIndex(where: { $0.id == update.chatId }) {
                 let updatedChat = cachedChats[index]
                 let newChat = TDLibKit.Chat(
@@ -288,7 +272,6 @@ final class ChatListViewModel: ObservableObject {
                 scheduleChatsUpdate()
             }
         case .updateChatUnreadMentionCount(let update):
-            print("ChatListViewModel: Обновлено количество непрочитанных упоминаний для чата \(update.chatId)")
             if let index = cachedChats.firstIndex(where: { $0.id == update.chatId }) {
                 let updatedChat = cachedChats[index]
                 let newChat = TDLibKit.Chat(
@@ -338,7 +321,6 @@ final class ChatListViewModel: ObservableObject {
                 scheduleChatsUpdate()
             }
         case .updateChatUnreadReactionCount(let update):
-            print("ChatListViewModel: Обновлено количество непрочитанных реакций для чата \(update.chatId)")
             if let index = cachedChats.firstIndex(where: { $0.id == update.chatId }) {
                 let updatedChat = cachedChats[index]
                 let newChat = TDLibKit.Chat(
@@ -388,7 +370,6 @@ final class ChatListViewModel: ObservableObject {
                 scheduleChatsUpdate()
             }
         case .updateChatReadInbox(let update):
-            print("ChatListViewModel: Обновлено состояние прочтения входящих для чата \(update.chatId)")
             if let index = cachedChats.firstIndex(where: { $0.id == update.chatId }) {
                 let updatedChat = cachedChats[index]
                 let newChat = TDLibKit.Chat(
@@ -438,7 +419,6 @@ final class ChatListViewModel: ObservableObject {
                 scheduleChatsUpdate()
             }
         case .updateChatReadOutbox(let update):
-            print("ChatListViewModel: Обновлено состояние прочтения исходящих для чата \(update.chatId)")
             if let index = cachedChats.firstIndex(where: { $0.id == update.chatId }) {
                 let updatedChat = cachedChats[index]
                 let newChat = TDLibKit.Chat(
@@ -488,10 +468,9 @@ final class ChatListViewModel: ObservableObject {
                 updateChats()
             }
         case .updateChatDraftMessage:
-            print("ChatListViewModel: updateChatDraftMessage не требует перезагрузки всех чатов")
-            // НЕ перезагружаем все чаты
+            break
         default:
-            print("ChatListViewModel: Необрабатываемое обновление \(type(of: update))")
+            break
         }
     }
     
@@ -499,12 +478,10 @@ final class ChatListViewModel: ObservableObject {
     func loadChats() async throws {
         // Проверяем, загружали ли мы уже чаты
         if hasLoadedChatsOnce {
-            print("ChatListViewModel: Чаты уже были загружены, пропускаем повторную загрузку")
             return
         }
         
         guard !isLoading else {
-            print("ChatListViewModel: Загрузка чатов уже идет, пропускаем повторный запрос")
             return
         }
         
@@ -514,7 +491,6 @@ final class ChatListViewModel: ObservableObject {
         
         do {
             cachedChats = []
-            print("ChatListViewModel: Загружаем чаты")
             
             // Загружаем список чатов
             _ = try await client.loadChats(chatList: .chatListMain, limit: 20)
@@ -523,7 +499,6 @@ final class ChatListViewModel: ObservableObject {
             let response = try await client.getChats(chatList: .chatListMain, limit: 50)
             let chatIds = response.chatIds
             
-            print("ChatListViewModel: Получено \(chatIds.count) ID чатов")
             loadingProgress = "Загружено \(chatIds.count) чатов"
             
             // Загружаем детали чатов
@@ -531,20 +506,16 @@ final class ChatListViewModel: ObservableObject {
                 do {
                     let chat = try await client.getChat(chatId: chatId)
                     upsertChat(chat)
-                } catch {
-                    print("ChatListViewModel: Ошибка при загрузке деталей чата \(chatId): \(error)")
-                }
+                } catch { }
             }
             updateChats()
             
             // Устанавливаем флаг, что чаты уже загружены
             hasLoadedChatsOnce = true
             
-            print("ChatListViewModel: Загрузка чатов завершена, получено \(cachedChats.count) чатов")
             loadingProgress = "" // Очищаем сообщение о загрузке
             isLoading = false
         } catch {
-            print("ChatListViewModel: Ошибка при загрузке чатов: \(error)")
             self.error = error
             loadingProgress = "" // Очищаем сообщение о загрузке даже при ошибке
             isLoading = false
@@ -631,13 +602,10 @@ final class ChatListViewModel: ObservableObject {
                 do {
                     let chat = try await client.getChat(chatId: chatId)
                     chats.append(makeTGChat(from: chat))
-                } catch {
-                    print("ChatListViewModel: Не удалось получить чат \(chatId): \(error)")
-                }
+                } catch { }
             }
             return chats
         } catch {
-            print("ChatListViewModel: Ошибка поиска чатов на сервере: \(error)")
             return []
         }
     }
@@ -665,13 +633,10 @@ final class ChatListViewModel: ObservableObject {
                 do {
                     let chat = try await client.getChat(chatId: message.chatId)
                     chats.append(makeTGChat(from: chat))
-                } catch {
-                    print("ChatListViewModel: Не удалось загрузить чат \(message.chatId) для хэштега: \(error)")
-                }
+                } catch { }
             }
             return chats
         } catch {
-            print("ChatListViewModel: Ошибка поиска по хэштегам: \(error)")
             return []
         }
     }
@@ -694,20 +659,15 @@ final class ChatListViewModel: ObservableObject {
     
     @MainActor
     private func updateChats() {
-        print("ChatListViewModel: Обновление списка чатов, количество: \(cachedChats.count)")
-        
         // Убеждаемся, что индикатор загрузки скрывается после успешного обновления чатов
         if !cachedChats.isEmpty && !loadingProgress.isEmpty {
-            print("ChatListViewModel: Очищаем индикатор загрузки, так как чаты успешно загружены")
             loadingProgress = ""
         }
         
         chats = cachedChats.map { makeTGChat(from: $0) }
         
-        // Если мы обновили список чатов и он не пустой, но индикатор загрузки все еще активен,
-        // сбрасываем флаг загрузки
+        // Если мы обновили список чатов и он не пустой, но индикатор загрузки все еще активен, сбрасываем флаг загрузки
         if !chats.isEmpty && isLoading && hasLoadedChatsOnce {
-            print("ChatListViewModel: Завершаем загрузку, так как чаты успешно загружены")
             isLoading = false
         }
         
