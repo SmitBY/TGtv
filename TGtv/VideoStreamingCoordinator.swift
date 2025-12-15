@@ -52,9 +52,7 @@ final class VideoStreamingCoordinator {
     }
     
     func makePlayerItem() -> AVPlayerItem? {
-        if !FileManager.default.fileExists(atPath: currentPath) {
-            _ = FileManager.default.createFile(atPath: currentPath, contents: nil)
-        }
+        ensureLocalFileExists(path: currentPath)
         
         loader.updatePath(
             path: currentPath,
@@ -105,6 +103,16 @@ final class VideoStreamingCoordinator {
         }
         return options
     }
+
+    private func ensureLocalFileExists(path: String) {
+        guard !path.isEmpty else { return }
+        let fm = FileManager.default
+        let dir = URL(fileURLWithPath: path).deletingLastPathComponent()
+        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        if !fm.fileExists(atPath: path) {
+            _ = fm.createFile(atPath: path, contents: nil)
+        }
+    }
 }
 
 final class ProgressiveFileResourceLoader: NSObject, AVAssetResourceLoaderDelegate {
@@ -136,15 +144,10 @@ final class ProgressiveFileResourceLoader: NSObject, AVAssetResourceLoaderDelega
             if !FileManager.default.fileExists(atPath: path) {
                 _ = FileManager.default.createFile(atPath: path, contents: nil)
             }
-            if
-                let attributes = try? FileManager.default.attributesOfItem(atPath: path),
-                let fileSize = attributes[.size] as? UInt64,
-                fileSize > 0
-            {
-                self.downloadedSize = max(downloadedSize, Int64(fileSize))
-            } else {
-                self.downloadedSize = downloadedSize
-            }
+            // ВАЖНО: нельзя ориентироваться на размер файла на диске при частичной загрузке.
+            // TDLib может создавать "дырявый" (sparse) файл и/или выставлять полный размер,
+            // хотя реально доступен только скачанный префикс (downloadedPrefixSize).
+            self.downloadedSize = max(downloadedSize, 0)
             self.isCompleted = isCompleted
             if let expectedSize {
                 self.expectedSize = expectedSize
@@ -218,9 +221,22 @@ final class ProgressiveFileResourceLoader: NSObject, AVAssetResourceLoaderDelega
             currentOffset = requestedOffset
         }
         
-        let fileSize = getFileSize() ?? UInt64(max(downloadedSize, 0))
+        // При незавершённой загрузке считаем доступными только байты в непрерывном префиксе.
+        // Иначе AVPlayer может попросить диапазоны, которые ещё не скачаны (или попадают в "дырки"),
+        // а мы случайно отдадим нули/мусор → ошибки декодирования и вечный .unknown.
+        let fileSize: UInt64? = isCompleted ? getFileSize() : nil
         let endOffset = requestedOffset + requestedLength
-        let availableBytes = max(Int64(fileSize), downloadedSize)
+        let availableBytes: Int64 = {
+            if isCompleted {
+                let size = fileSize.map(Int64.init) ?? expectedSize
+                return max(size, 0)
+            }
+            // Ограничиваемся contiguous префиксом
+            if expectedSize > 0 {
+                return min(max(downloadedSize, 0), expectedSize)
+            }
+            return max(downloadedSize, 0)
+        }()
         
         if availableBytes <= currentOffset {
             if !isCompleted {
@@ -263,9 +279,6 @@ final class ProgressiveFileResourceLoader: NSObject, AVAssetResourceLoaderDelega
            let size = attributes[.size] as? UInt64 {
             return size
         }
-        if downloadedSize > 0 {
-            return UInt64(downloadedSize)
-        }
         return nil
     }
     
@@ -278,8 +291,9 @@ final class ProgressiveFileResourceLoader: NSObject, AVAssetResourceLoaderDelega
         guard !hasProvidedContentInformation,
               let infoRequest = loadingRequest.contentInformationRequest else { return }
         infoRequest.contentType = contentType(for: mimeType)
-        let fileSizeFallback = getFileSize().map(Int64.init) ?? downloadedSize
-        let length = expectedSize > 0 ? expectedSize : max(fileSizeFallback, 0)
+        // contentLength — полный размер ассета (если известен).
+        // Не используем размер файла на диске как источник истины при частичной загрузке.
+        let length = expectedSize > 0 ? expectedSize : max(downloadedSize, 0)
         infoRequest.contentLength = length
         infoRequest.isByteRangeAccessSupported = true
         hasProvidedContentInformation = true

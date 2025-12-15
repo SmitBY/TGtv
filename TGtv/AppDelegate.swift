@@ -985,6 +985,8 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     private let selectedChatsStore = SelectedChatsStore()
     // Последовательная очередь для обработки обновлений TDLib, чтобы избежать одновременных вызовов receive
     private let tdUpdateQueue = DispatchQueue(label: "tgtd.updates.queue")
+    // Защита от повторного/параллельного перезапуска auth flow
+    private var isRestartingAuthFlow = false
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
         print("AppDelegate: Запуск приложения")
@@ -1064,7 +1066,11 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     }
 
     private func setupTDLibClient() {
-        clientManager = TDLibClientManager()
+        // Важно: TDLibKit требует ОДИН TDLibClientManager на приложение.
+        // Он владеет единственным receive-loop (td_receive) и не должен создаваться повторно.
+        if clientManager == nil {
+            clientManager = TDLibClientManager()
+        }
         client = clientManager?.createClient(updateHandler: { [weak self] (data: Data, client: TDLibClient) in
             // Гарантируем, что обработка обновлений выполняется последовательно на одной очереди
             self?.tdUpdateQueue.async { [weak self] in
@@ -1122,6 +1128,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     private func process(update: TDLibKit.Update) {
         Task { @MainActor [weak self] in
             guard let self else { return }
+            if case let TDLibKit.Update.updateAuthorizationState(stateUpdate) = update {
+                print("AppDelegate: updateAuthorizationState = \(stateUpdate.authorizationState)")
+            }
             self.authService?.handleUpdate(update)
             
             if case let TDLibKit.Update.updateFile(fileUpdate) = update {
@@ -1254,9 +1263,53 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
     @MainActor
     private func restartAuthFlow() {
+        guard !isRestartingAuthFlow else { return }
+        isRestartingAuthFlow = true
+
         print("AppDelegate: Пересоздаем TDLib клиент и сервисы после выхода")
         cancellables.removeAll()
+        let oldClient = client
+        client = nil
 
+        // Закрываем старый client неблокирующе (TDLib close иногда может подвиснуть),
+        // и в любом случае продолжаем пересоздание после таймаута.
+        Task { [weak self] in
+            if let oldClient {
+                await self?.closeClientWithTimeout(oldClient, timeoutSeconds: 2.0)
+            }
+            await MainActor.run { [weak self] in
+                self?.finishRestartAuthFlow()
+            }
+        }
+    }
+
+    private func closeClientWithTimeout(_ client: TDLibClient, timeoutSeconds: TimeInterval) async {
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask {
+                await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                    do {
+                        try client.close(completion: { _ in
+                            cont.resume()
+                        })
+                    } catch {
+                        cont.resume()
+                    }
+                }
+            }
+            group.addTask {
+                let ns = UInt64(timeoutSeconds * 1_000_000_000)
+                try? await Task.sleep(nanoseconds: ns)
+            }
+            await group.next()
+            group.cancelAll()
+        }
+    }
+
+    @MainActor
+    private func finishRestartAuthFlow() {
+        defer { isRestartingAuthFlow = false }
+
+        print("AppDelegate: finishRestartAuthFlow()")
         setupTDLibClient()
 
         guard let client else {
@@ -1267,8 +1320,10 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         authService = AuthService(client: client)
         chatListViewModel = ChatListViewModel(client: client)
 
-        let authVC = AuthQRController(authService: authService!)
-        let chatListVC = makeChatSelectionController(viewModel: chatListViewModel!)
+        guard let authService, let chatListViewModel else { return }
+
+        let authVC = AuthQRController(authService: authService)
+        let chatListVC = makeChatSelectionController(viewModel: chatListViewModel)
 
         let nav = navigationController ?? UINavigationController()
         nav.isNavigationBarHidden = false
@@ -1276,19 +1331,12 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         window?.rootViewController = nav
         window?.makeKeyAndVisible()
 
-        Task { @MainActor in
-            if authService?.isAuthorized == true {
-                if selectedChatsStore.hasCompletedSelection {
-                    nav.setViewControllers([makeHomeController()], animated: false)
-                } else {
-                    nav.setViewControllers([chatListVC], animated: false)
-                }
-            } else {
-                nav.setViewControllers([authVC], animated: false)
-            }
-        }
+        // После logout всегда показываем QR-экран (isAuthorized сейчас false),
+        // и запускаем auth-flow без троттлинга, чтобы TDLib гарантированно выдал новый QR.
+        nav.setViewControllers([authVC], animated: false)
+        Task { await authService.startAuthFlow(force: true) }
 
-        authService?.$isAuthorized
+        authService.$isAuthorized
             .removeDuplicates()
             .receive(on: DispatchQueue.main)
             .sink { [weak self, weak nav, weak authVC] isAuthorized in
@@ -1296,6 +1344,15 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
                 self.handleAuthStateChange(isAuthorized: isAuthorized, navigationController: nav, authVC: authVC)
             }
             .store(in: &cancellables)
+
+        // На случай, если пользователь был авторизован и быстро вернулся — восстановим корректный стек.
+        if authService.isAuthorized {
+            if selectedChatsStore.hasCompletedSelection {
+                nav.setViewControllers([makeHomeController()], animated: false)
+            } else {
+                nav.setViewControllers([chatListVC], animated: false)
+            }
+        }
     }
 
     private func setInitialStack(nav: UINavigationController, isAuthorized: Bool, authVC: AuthQRController, chatSelectionVC: ChatListViewController) {

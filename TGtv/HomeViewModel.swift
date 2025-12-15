@@ -169,33 +169,13 @@ final class HomeViewModel: ObservableObject {
     
     func fetchLatestVideoInfo(for item: HomeVideoItem) async -> TG.MessageMedia.VideoInfo? {
         do {
-            var file = try await client.getFile(fileId: item.videoFileId)
-            var local = file.local
+            let file = try await client.getFile(fileId: item.videoFileId)
+            let local = file.local
             
-            // Если path пустой — делаем синхронный запрос downloadFile, чтобы получить путь
-            if local.path.isEmpty {
-                if let downloaded = try? await client.downloadFile(
-                    fileId: file.id,
-                    limit: 0,
-                    offset: 0,
-                    priority: 32,
-                    synchronous: true
-                ) {
-                    file = downloaded
-                    local = downloaded.local
-                }
-            }
-            
-            // Если после попытки path пуст — создаём резервный путь
-            var path = local.path
-            if path.isEmpty {
-                if let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
-                    let tempDir = docs.appendingPathComponent("tdlib_files/temp", isDirectory: true)
-                    try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-                    path = tempDir.appendingPathComponent("\(file.id).mp4").path
-                    FileManager.default.createFile(atPath: path, contents: nil)
-                }
-            }
+            // ВАЖНО: не подменяем путь на "фейковый" файл.
+            // TDLib будет писать в свой local.path; если мы создадим пустой файл в другом месте,
+            // moov-проверка гарантированно провалится и UI ошибочно уйдёт в full-download.
+            let path = local.path
             
             let contiguousSize = max(local.downloadedPrefixSize, 0)
             let expectedSize = max(Int64(file.size), max(local.downloadedSize, contiguousSize))
@@ -203,14 +183,19 @@ final class HomeViewModel: ObservableObject {
             
             // Запускаем загрузку, если можно
             if local.canBeDownloaded && !local.isDownloadingActive && !local.isDownloadingCompleted {
-                _ = try? await client.downloadFile(
-                    fileId: file.id,
-                    limit: 0,
-                    offset: 0,
-                    priority: 32,
-                    synchronous: false
-                )
+                Task.detached { [client] in
+                    _ = try? await client.downloadFile(
+                        fileId: file.id,
+                        limit: 0,
+                        offset: 0,
+                        priority: 32,
+                        synchronous: false
+                    )
+                }
             }
+
+            // Пока TDLib не выдал реальный путь, не пытаемся стримить/проверять moov.
+            guard !path.isEmpty else { return nil }
             
             return TG.MessageMedia.VideoInfo(
                 path: path,

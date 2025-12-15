@@ -40,6 +40,7 @@ final class HomeViewController: UIViewController, AVPlayerViewControllerDelegate
     private var currentLoadingFileId: Int?
     private var loadingOverlayMessage: String?
     private var suppressLoadingOverlay = false
+    private var lastDownloadLog: [String: (downloaded: Int64, expected: Int64)] = [:]
     private var isFullscreenLoadingVisible: Bool {
         fullscreenLoadingView?.isHidden == false
     }
@@ -125,7 +126,9 @@ final class HomeViewController: UIViewController, AVPlayerViewControllerDelegate
         
         let overlay = UIView()
         overlay.translatesAutoresizingMaskIntoConstraints = false
-        overlay.backgroundColor = UIColor(white: 0, alpha: 0.5)
+        // Убираем затемнение фоновой картинки
+        overlay.backgroundColor = .clear
+        overlay.isUserInteractionEnabled = false
         view.addSubview(overlay)
         NSLayoutConstraint.activate([
             overlay.topAnchor.constraint(equalTo: view.topAnchor),
@@ -338,14 +341,20 @@ final class HomeViewController: UIViewController, AVPlayerViewControllerDelegate
             guard isCurrent else { return }
 
             let local = file.local
-            let downloaded = max(Int64(local.downloadedSize), Int64(local.downloadedPrefixSize))
-            let expected = max(Int64(file.size), downloaded)
-            let progress = expected > 0 ? Double(downloaded) / Double(expected) : nil
+            // ВАЖНО: для стриминга и корректного UI ориентируемся на непрерывный префикс.
+            // local.downloadedSize может отражать "дырявую" загрузку/предвыделение и давать 100% при isDownloadingCompleted=false.
+            let prefix = max(Int64(local.downloadedPrefixSize), 0)
+            let downloadedForUI: Int64 = local.isDownloadingCompleted
+                ? max(prefix, Int64(local.downloadedSize))
+                : prefix
+            let expectedRaw = Int64(file.size)
+            let expectedForUI = expectedRaw > 0 ? expectedRaw : max(downloadedForUI, 0)
+            let progress = expectedForUI > 0 ? Double(downloadedForUI) / Double(expectedForUI) : nil
 
             logDownloadProgress(
                 fileId: file.id,
-                downloaded: downloaded,
-                expected: expected,
+                downloaded: downloadedForUI,
+                expected: expectedForUI,
                 label: "file-update"
             )
 
@@ -359,18 +368,6 @@ final class HomeViewController: UIViewController, AVPlayerViewControllerDelegate
         setLoading(true)
         await viewModel.refresh()
         setLoading(false)
-        // #region agent log
-        agentLog(
-            hypothesisId: "H-sections",
-            location: "HomeViewController:reloadData",
-            message: "sections after refresh",
-            data: [
-                "count": viewModel.sections.count,
-                "titles": viewModel.sections.map { $0.title },
-                "chatIds": viewModel.sections.map { $0.chatId }
-            ]
-        )
-        // #endregion
         applySnapshot(sections: viewModel.sections)
         updateEmptyState()
     }
@@ -393,38 +390,6 @@ final class HomeViewController: UIViewController, AVPlayerViewControllerDelegate
             break
         }
     }
-
-    // #region agent log
-    private func agentLog(
-        hypothesisId: String,
-        location: String,
-        message: String,
-        data: [String: Any] = [:]
-    ) {
-        let payload: [String: Any] = [
-            "sessionId": "debug-session",
-            "runId": "dup-names-pre2",
-            "hypothesisId": hypothesisId,
-            "location": location,
-            "message": message,
-            "data": data,
-            "timestamp": Int(Date().timeIntervalSince1970 * 1000)
-        ]
-        guard let jsonData = try? JSONSerialization.data(withJSONObject: payload),
-              var line = String(data: jsonData, encoding: .utf8) else { return }
-        line.append("\n")
-        let url = URL(fileURLWithPath: "/Users/dmitriy/Documents/Projects/TGtv/.cursor/debug.log")
-        if let handle = try? FileHandle(forWritingTo: url) {
-            handle.seekToEndOfFile()
-            if let data = line.data(using: .utf8) {
-                handle.write(data)
-            }
-            try? handle.close()
-        } else {
-            try? line.write(to: url, atomically: true, encoding: .utf8)
-        }
-    }
-    // #endregion
 }
 
 // MARK: - Cells & Headers
@@ -474,35 +439,13 @@ final class VideoCell: UICollectionViewCell {
         }
         
         placeholderLabel.isHidden = false
-        
-        // #region agent log
-        cellLog(
-            hypothesisId: "H9",
-            location: "VideoCell.configure",
-            message: "cell title set",
-            data: [
-                "title": title,
-                "instance": Unmanaged.passUnretained(self).toOpaque().debugDescription
-            ]
-        )
-        // #endregion
+    
     }
     
     override func prepareForReuse() {
         super.prepareForReuse()
         thumbnailView.image = nil
         placeholderLabel.isHidden = true
-        // #region agent log
-        cellLog(
-            hypothesisId: "H10",
-            location: "VideoCell.prepareForReuse",
-            message: "cell reused",
-            data: [
-                "title": titleLabel.text ?? "",
-                "instance": Unmanaged.passUnretained(self).toOpaque().debugDescription
-            ]
-        )
-        // #endregion
     }
     
     private func setupUI() {
@@ -553,45 +496,97 @@ final class VideoCell: UICollectionViewCell {
     }
 }
 
-// MARK: - Cell logging
-private extension VideoCell {
-    func cellLog(
-        hypothesisId: String,
-        location: String,
-        message: String,
-        data: [String: Any] = [:]
-    ) {
-        let payload: [String: Any] = [
-            "sessionId": "debug-session",
-            "runId": "dup-names-pre2",
-            "hypothesisId": hypothesisId,
-            "location": location,
-            "message": message,
-            "data": data,
-            "timestamp": Int(Date().timeIntervalSince1970 * 1000)
-        ]
-        guard let jsonData = try? JSONSerialization.data(withJSONObject: payload),
-              var line = String(data: jsonData, encoding: .utf8) else { return }
-        line.append("\n")
-        let url = URL(fileURLWithPath: "/Users/dmitriy/Documents/Projects/TGtv/.cursor/debug.log")
-        if let handle = try? FileHandle(forWritingTo: url) {
-            handle.seekToEndOfFile()
-            if let data = line.data(using: .utf8) {
-                handle.write(data)
-            }
-            try? handle.close()
-        } else {
-            try? line.write(to: url, atomically: true, encoding: .utf8)
-        }
-    }
-}
-
 // MARK: - Collection Delegate
 
 extension HomeViewController: UICollectionViewDelegate {
     func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
         guard let item = dataSource.itemIdentifier(for: indexPath), item.videoFileId != 0 else { return }
         playVideo(item)
+    }
+    
+    private func withTimeoutVideoInfo(seconds: Double, operation: @escaping () async -> TG.MessageMedia.VideoInfo?) async -> TG.MessageMedia.VideoInfo? {
+        await withTaskGroup(of: TG.MessageMedia.VideoInfo?.self) { group in
+            group.addTask { await operation() }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                return nil
+            }
+            let result = await group.next() ?? nil
+            group.cancelAll()
+            return result
+        }
+    }
+
+    private func waitForPrefix(
+        item: HomeVideoItem,
+        selectionId: String?,
+        minPrefixBytes: Int64,
+        timeoutSeconds: Double,
+        message: String
+    ) async -> TG.MessageMedia.VideoInfo? {
+        let deadline = Date().timeIntervalSince1970 + timeoutSeconds
+        while !Task.isCancelled {
+            if let selectionId, selectionId != currentSelectionId { return nil }
+            if let info = await viewModel.fetchLatestVideoInfo(for: item) {
+                if info.isDownloadingCompleted || info.downloadedSize >= minPrefixBytes {
+                    return info
+                }
+                let progress = info.expectedSize > 0 ? Double(info.downloadedSize) / Double(info.expectedSize) : 0
+                await MainActor.run {
+                    self.showFullscreenLoading(progress: progress, message: message)
+                }
+            }
+            if Date().timeIntervalSince1970 > deadline { return nil }
+            try? await Task.sleep(nanoseconds: 400_000_000)
+        }
+        return nil
+    }
+
+    private func waitForMoovOrThreshold(
+        item: HomeVideoItem,
+        selectionId: String?,
+        maxPrefixBytes: Int64,
+        timeoutSeconds: Double,
+        message: String
+    ) async -> (info: TG.MessageMedia.VideoInfo, streamable: Bool)? {
+        let deadline = Date().timeIntervalSince1970 + timeoutSeconds
+        while !Task.isCancelled {
+            if let selectionId, selectionId != currentSelectionId { return nil }
+            guard let info = await viewModel.fetchLatestVideoInfo(for: item) else {
+                if Date().timeIntervalSince1970 > deadline { return nil }
+                try? await Task.sleep(nanoseconds: 400_000_000)
+                continue
+            }
+
+            if info.isDownloadingCompleted {
+                return (info, true)
+            }
+
+            let progress = info.expectedSize > 0 ? Double(info.downloadedSize) / Double(info.expectedSize) : 0
+            await MainActor.run {
+                self.showFullscreenLoading(progress: progress, message: message)
+            }
+
+            let scanBytes = min(max(info.downloadedSize, 0), maxPrefixBytes)
+            if scanBytes >= 12 {
+                let ok = isMP4StreamableByPrefix(
+                    filePath: info.path,
+                    prefixBytes: scanBytes,
+                    maxScanBytes: Int(scanBytes)
+                )
+                if ok {
+                    return (info, true)
+                }
+            }
+
+            if info.downloadedSize >= maxPrefixBytes {
+                return (info, false)
+            }
+
+            if Date().timeIntervalSince1970 > deadline { return nil }
+            try? await Task.sleep(nanoseconds: 500_000_000)
+        }
+        return nil
     }
     
     private func playVideo(_ item: HomeVideoItem) {
@@ -602,41 +597,35 @@ extension HomeViewController: UICollectionViewDelegate {
         backgroundDownloadTask = nil
         loadingOverlayMessage = nil
         setLoading(true)
-        showFullscreenLoading(progress: nil)
+        showFullscreenLoading(progress: nil, message: "Подготовка…")
         progressWatchTask?.cancel()
         
         progressWatchTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            guard var info = await viewModel.fetchLatestVideoInfo(for: item) else {
-                self.setLoading(false)
-                self.hideFullscreenLoading()
-                self.showAlert(title: "Ошибка", message: "Не удалось получить данные видео.")
-                return
+            // На первом запуске TDLib может не сразу отдать local.path.
+            // НЕ показываем алерт/ошибку — просто ждём и держим оверлей "Подготовка…".
+            var info: TG.MessageMedia.VideoInfo?
+            var attempts = 0
+            while !Task.isCancelled, selectionId == self.currentSelectionId {
+                attempts += 1
+                info = await self.viewModel.fetchLatestVideoInfo(for: item)
+                if info != nil { break }
+                // каждые ~5 секунд обновляем текст, чтобы было понятно что идёт ожидание
+                if attempts % 10 == 0 {
+                    self.showFullscreenLoading(progress: nil, message: "Подготовка…")
+                }
+                try? await Task.sleep(nanoseconds: 500_000_000)
             }
+            guard let info, selectionId == self.currentSelectionId else { return }
 
             currentLoadingFileId = info.fileId
             
-            // Подтягиваем хвост (moov atom) при неполной загрузке, не блокируя старт
-            if !info.isDownloadingCompleted, info.expectedSize > 0 {
-                let progress = Double(info.downloadedSize) / Double(info.expectedSize)
-                self.showFullscreenLoading(progress: progress)
-                
-                let tailOffset = max(info.expectedSize - 4_000_000, 0)
-                _ = try? await self.viewModel.client.downloadFile(
-                    fileId: info.fileId,
-                    limit: 4_000_000,
-                    offset: tailOffset,
-                    priority: 32,
-                    synchronous: true
-                )
-                if let refreshed = await self.viewModel.fetchLatestVideoInfo(for: item) {
-                    info = refreshed
-                }
-            }
-            
-            // Если префикс не скачан — запускаем докачку от нулевого offset и ждём появления префикса
-            if info.downloadedSize == 0 && !info.isDownloadingCompleted {
-                self.showFullscreenLoading(progress: 0)
+            // Для потокового старта нужен небольшой непрерывный префикс, иначе moov-проверка и AVPlayer
+            // могут "решить", что стрим невозможен, и мы уйдём в полный download слишком рано.
+            let minPrefixForStreaming: Int64 = 2_000_000
+            if !info.isDownloadingCompleted, info.downloadedSize < minPrefixForStreaming {
+                let progress = info.expectedSize > 0 ? Double(info.downloadedSize) / Double(info.expectedSize) : 0
+                self.showFullscreenLoading(progress: progress, message: "Подготовка потокового воспроизведения…")
                 Task.detached { [client = self.viewModel.client] in
                     _ = try? await client.downloadFile(
                         fileId: info.fileId,
@@ -646,7 +635,7 @@ extension HomeViewController: UICollectionViewDelegate {
                         synchronous: false
                     )
                 }
-                await self.pollPrefixAndPlay(item: item, selectionId: selectionId)
+                await self.pollPrefixAndPlay(item: item, selectionId: selectionId, minPrefixBytes: minPrefixForStreaming)
                 return
             }
             
@@ -654,7 +643,7 @@ extension HomeViewController: UICollectionViewDelegate {
         }
     }
 
-    private func pollPrefixAndPlay(item: HomeVideoItem, selectionId: String) async {
+    private func pollPrefixAndPlay(item: HomeVideoItem, selectionId: String, minPrefixBytes: Int64) async {
         var attempts = 0
         while !Task.isCancelled {
             attempts += 1
@@ -668,19 +657,7 @@ extension HomeViewController: UICollectionViewDelegate {
                 )
                 await MainActor.run { self.showFullscreenLoading(progress: progress) }
                 
-                // Периодически дёргаем хвост, чтобы быстрее получить moov для потокового старта
-                if info.expectedSize > 0 && info.downloadedSize == 0 && attempts.isMultiple(of: 5) {
-                    let tailOffset = max(info.expectedSize - 4_000_000, 0)
-                    _ = try? await viewModel.client.downloadFile(
-                        fileId: info.fileId,
-                        limit: 4_000_000,
-                        offset: tailOffset,
-                        priority: 32,
-                        synchronous: true
-                    )
-                }
-                
-                if info.downloadedSize > 0 || info.isDownloadingCompleted {
+                if info.isDownloadingCompleted || info.downloadedSize >= minPrefixBytes {
                     await MainActor.run {
                         _ = Task { [weak self] in
                             await self?.startPlayback(with: info, fallbackItem: item, selectionId: selectionId)
@@ -696,6 +673,7 @@ extension HomeViewController: UICollectionViewDelegate {
             self.setLoading(false)
             self.hideFullscreenLoading()
             print("[stream] prefix timeout for fileId=\(item.videoFileId)")
+            self.showAlert(title: "Не удалось начать воспроизведение", message: "Не удалось получить данные для потокового воспроизведения (префикс не загрузился). Проверьте сеть и попробуйте ещё раз.")
         }
     }
 
@@ -736,80 +714,94 @@ extension HomeViewController: UICollectionViewDelegate {
             self.showAlert(title: "Ошибка", message: "Нет локального пути к файлу видео.")
             return
         }
-        if !FileManager.default.fileExists(atPath: info.path) {
-            _ = FileManager.default.createFile(atPath: info.path, contents: nil)
+
+        // Гарантируем существование родительской директории и самого файла.
+        if let ensuredPath = ensureLocalPlayableFilePath(originalPath: info.path, fileId: info.fileId) {
+            info = TG.MessageMedia.VideoInfo(
+                path: ensuredPath,
+                fileId: info.fileId,
+                expectedSize: info.expectedSize,
+                downloadedSize: info.downloadedSize,
+                isDownloadingCompleted: info.isDownloadingCompleted,
+                mimeType: info.mimeType
+            )
         }
+
         guard FileManager.default.fileExists(atPath: info.path) else {
             self.setLoading(false)
             self.hideFullscreenLoading()
+            print("[stream] local file unavailable fileId=\(info.fileId) path=\(info.path)")
             self.showAlert(title: "Ошибка", message: "Локальный файл недоступен.")
             return
         }
         
-        // Если префикс слишком мал (moov в конце) или прогресс меньше 5% большого файла — считаем нестримовым, грузим полностью
-        let minPrefixForStreaming: Int64 = 2_000_000
-        let dynamicMinForLargeFile: Int64 = info.expectedSize > 0 ? max(minPrefixForStreaming, info.expectedSize / 20) : minPrefixForStreaming // 5% от файла
-        if info.expectedSize > 0,
-           info.downloadedSize < dynamicMinForLargeFile,
-           !info.isDownloadingCompleted {
-            self.showFullscreenLoading(progress: Double(info.downloadedSize) / Double(info.expectedSize), message: "Это видео не поддерживает потоковое воспроизведение. Идёт загрузка...")
-            backgroundDownloadTask?.cancel()
-            backgroundDownloadTask = Task { [weak self] in
-                guard let self else { return }
-                defer { backgroundDownloadTask = nil }
-                let full = await self.downloadFullFileIfNeeded(
-                    fileId: info.fileId,
-                    progressHandler: { progress in
-                        await MainActor.run {
-                            self.showFullscreenLoading(
-                                progress: progress,
-                                message: "Это видео не поддерживает потоковое воспроизведение. Идёт загрузка..."
-                            )
-                        }
-                    }
+        // Проверка наличия moov в префиксе.
+        // ВАЖНО: не уходим в full-download "слишком рано".
+        // По твоим логам moov появляется только на десятках мегабайт (например ~58MB),
+        // поэтому ждём его до порога (96MB) и проверяем по мере роста префикса.
+        if !info.isDownloadingCompleted {
+            Task.detached { [client = self.viewModel.client, fileId = info.fileId] in
+                _ = try? await client.downloadFile(
+                    fileId: fileId,
+                    limit: 0,
+                    offset: 0,
+                    priority: 32,
+                    synchronous: false
                 )
-                guard let full else {
-                    await MainActor.run {
-                        self.setLoading(false)
-                        // Если загрузка отменена пользователем/переключением — просто выходим без алерта
-                        self.hideFullscreenLoading()
-                    }
-                    return
-                }
-                if selectionId != self.currentSelectionId {
-                    return
-                }
-                let updatedInfo = TG.MessageMedia.VideoInfo(
-                    path: full.local.path,
-                    fileId: full.id,
-                    expectedSize: Int64(full.size),
-                    downloadedSize: max(Int64(full.local.downloadedSize), Int64(full.local.downloadedPrefixSize)),
-                    isDownloadingCompleted: full.local.isDownloadingCompleted,
-                    mimeType: info.mimeType
-                )
-                await MainActor.run {
-                    self.showFullscreenLoading(
-                        progress: 1,
-                        message: "Загрузка завершена. Запуск плеера..."
-                    )
-                }
-                await self.startPlayback(with: updatedInfo, fallbackItem: fallbackItem, selectionId: selectionId)
             }
-            return
-        }
-        
-        // Пробуем сразу подтянуть moov из хвоста, чтобы стрим стартанул быстрее
-        if info.expectedSize > 0 && info.downloadedSize < info.expectedSize {
-            let tailOffset = max(info.expectedSize - 4_000_000, 0)
-            _ = try? await viewModel.client.downloadFile(
-                fileId: info.fileId,
-                limit: 4_000_000,
-                offset: tailOffset,
-                priority: 32,
-                synchronous: true
-            )
-            if let refreshed = await viewModel.fetchLatestVideoInfo(for: fallbackItem) {
-                info = refreshed
+
+            let maxMoovWaitBytes: Int64 = 96_000_000
+            if let result = await waitForMoovOrThreshold(
+                item: fallbackItem,
+                selectionId: selectionId,
+                maxPrefixBytes: maxMoovWaitBytes,
+                timeoutSeconds: 180,
+                message: "Подготовка потокового воспроизведения…"
+            ) {
+                info = result.info
+                if !result.streamable {
+                    self.showFullscreenLoading(
+                        progress: info.expectedSize > 0 ? Double(info.downloadedSize) / Double(info.expectedSize) : nil,
+                        message: "Это видео не поддерживает потоковое воспроизведение. Идёт загрузка..."
+                    )
+                    backgroundDownloadTask?.cancel()
+                    backgroundDownloadTask = Task { [weak self] in
+                        guard let self else { return }
+                        defer { backgroundDownloadTask = nil }
+                        let full = await self.downloadFullFileIfNeeded(
+                            fileId: info.fileId,
+                            progressHandler: { progress in
+                                await MainActor.run {
+                                    self.showFullscreenLoading(
+                                        progress: progress,
+                                        message: "Это видео не поддерживает потоковое воспроизведение. Идёт загрузка..."
+                                    )
+                                }
+                            }
+                        )
+                        guard let full else {
+                            await MainActor.run {
+                                self.setLoading(false)
+                                self.hideFullscreenLoading()
+                            }
+                            return
+                        }
+                        if selectionId != self.currentSelectionId { return }
+                        let updatedInfo = TG.MessageMedia.VideoInfo(
+                            path: full.local.path,
+                            fileId: full.id,
+                            expectedSize: Int64(full.size),
+                            downloadedSize: max(Int64(full.local.downloadedSize), Int64(full.local.downloadedPrefixSize)),
+                            isDownloadingCompleted: full.local.isDownloadingCompleted,
+                            mimeType: info.mimeType
+                        )
+                        await MainActor.run {
+                            self.showFullscreenLoading(progress: 1, message: "Загрузка завершена. Запуск плеера...")
+                        }
+                        await self.startPlayback(with: updatedInfo, fallbackItem: fallbackItem, selectionId: selectionId)
+                    }
+                    return
+                }
             }
         }
         
@@ -842,18 +834,30 @@ extension HomeViewController: UICollectionViewDelegate {
         player.volume = 1.0
         player.isMuted = false
         playerItem.preferredForwardBufferDuration = 0
+        // Убираем оверлей ДО показа AVPlayerViewController, чтобы он не "просвечивал" при overFullScreen.
+        self.hideFullscreenLoading()
         self.presentOrReusePlayer(player: player, item: playerItem, selectionId: selectionId) { [weak self] in
             self?.setLoading(false)
             self?.hideFullscreenLoading()
         }
-        
-        // Фон: догружаем полностью, проверяем аудио и подменяем item при необходимости
+
+        // Если item надолго остаётся в .unknown — это почти всегда "moov не доступен" или проблемы с диапазонами.
+        // Даём короткий таймаут и уходим в фоллбэк (полная загрузка + replace item).
         Task { [weak self, weak player] in
             guard let self else { return }
-            guard let full = await downloadFullFileIfNeeded(fileId: info.fileId) else { return }
-            if selectionId != self.currentSelectionId {
-                return
+            let fileId = info.fileId
+            try? await Task.sleep(nanoseconds: 8_000_000_000)
+            await MainActor.run {
+                guard selectionId == self.currentSelectionId else { return }
+                guard self.currentPlaybackFileId == fileId else { return }
+                guard playerItem.status == .unknown else { return }
+                print("[stream] unknown-timeout fileId=\(fileId) -> fallback full download")
             }
+            guard selectionId == self.currentSelectionId else { return }
+            guard self.currentPlaybackFileId == fileId else { return }
+            guard playerItem.status == .unknown else { return }
+            guard let full = await self.downloadFullFileIfNeeded(fileId: fileId) else { return }
+            if selectionId != self.currentSelectionId { return }
             let updatedInfo = TG.MessageMedia.VideoInfo(
                 path: full.local.path,
                 fileId: full.id,
@@ -862,13 +866,7 @@ extension HomeViewController: UICollectionViewDelegate {
                 isDownloadingCompleted: full.local.isDownloadingCompleted,
                 mimeType: info.mimeType
             )
-            logDownloadProgress(
-                fileId: updatedInfo.fileId,
-                downloaded: updatedInfo.downloadedSize,
-                expected: updatedInfo.expectedSize,
-                label: "bg-full-download"
-            )
-            guard let playable = await ensurePlayableLocalURL(for: updatedInfo) else { return }
+            guard let playable = await self.ensurePlayableLocalURL(for: updatedInfo) else { return }
             await MainActor.run {
                 let asset = AVURLAsset(url: playable, options: self.assetOptions(for: info.mimeType))
                 let newItem = AVPlayerItem(asset: asset)
@@ -878,9 +876,14 @@ extension HomeViewController: UICollectionViewDelegate {
                 player?.play()
                 if let currentVC = self.presentedViewController as? AVPlayerViewController {
                     currentVC.player = player
+                    self.attachPlaybackObservers(player: player ?? AVPlayer(), item: newItem, controller: currentVC)
                 }
             }
         }
+        
+        // Примечание: раньше мы всегда догружали файл полностью в фоне.
+        // Это создавало ощущение "сразу пошла полная загрузка", даже когда стрим уже запущен.
+        // Полную загрузку теперь делаем только по необходимости (ошибка/unknown-timeout/неподдерживаемый контейнер).
     }
 
     private func presentOrReusePlayer(player: AVPlayer, item: AVPlayerItem, selectionId: String?, onPresented: (() -> Void)? = nil) {
@@ -898,7 +901,7 @@ extension HomeViewController: UICollectionViewDelegate {
         }
         let vc = AVPlayerViewController()
         vc.player = player
-        vc.modalPresentationStyle = .overFullScreen
+        vc.modalPresentationStyle = .fullScreen
         vc.delegate = self
         present(vc, animated: true) { [weak self, weak vc] in
             guard let self, let vc else { return }
@@ -1197,6 +1200,107 @@ extension HomeViewController: UICollectionViewDelegate {
             self?.streamingCoordinator = nil
         }
     }
+
+    // MARK: - Local file ensure
+    private func ensureLocalPlayableFilePath(originalPath: String, fileId: Int) -> String? {
+        let fm = FileManager.default
+
+        func ensure(atPath path: String) -> Bool {
+            let dir = URL(fileURLWithPath: path).deletingLastPathComponent()
+            do {
+                try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+            } catch {
+                return false
+            }
+            if fm.fileExists(atPath: path) { return true }
+            return fm.createFile(atPath: path, contents: nil)
+        }
+
+        // 1) Пробуем оригинальный путь (tdlib_files/...)
+        if ensure(atPath: originalPath) { return originalPath }
+
+        // 2) Фоллбэк в caches (всегда должен быть доступен)
+        if let caches = fm.urls(for: .cachesDirectory, in: .userDomainMask).first {
+            let dir = caches.appendingPathComponent("tgtv_stream_tmp", isDirectory: true)
+            let fallback = dir.appendingPathComponent("\(fileId).mp4").path
+            if ensure(atPath: fallback) {
+                print("[stream] fallback local path fileId=\(fileId) path=\(fallback)")
+                return fallback
+            }
+        }
+        return nil
+    }
+
+    // MARK: - MP4 moov check (быстрая эвристика)
+    private func isMP4StreamableByPrefix(filePath: String, prefixBytes: Int64, maxScanBytes: Int) -> Bool {
+        guard prefixBytes > 0 else { return false }
+        guard FileManager.default.fileExists(atPath: filePath) else { return false }
+        let toRead = max(0, min(Int(prefixBytes), maxScanBytes))
+        guard toRead >= 12 else { return false }
+
+        let url = URL(fileURLWithPath: filePath)
+        let data: Data
+        do {
+            let h = try FileHandle(forReadingFrom: url)
+            defer { try? h.close() }
+            data = try h.read(upToCount: toRead) ?? Data()
+        } catch {
+            return false
+        }
+        guard data.count >= 12 else { return false }
+
+        // Парсим MP4 боксы по заголовкам: size(4) + type(4), size=1 => extended size(8)
+        // Считаем "streamable", если встретили moov до mdat и целиком в пределах префикса.
+        var i = 0
+        while i + 8 <= data.count {
+            let size32 = readBEUInt32(data, offset: i)
+            let type = readFourCC(data, offset: i + 4)
+            var boxSize = Int(size32)
+            var headerSize = 8
+            if boxSize == 1 {
+                // extended size
+                if i + 16 > data.count { return false }
+                let size64 = readBEUInt64(data, offset: i + 8)
+                if size64 > UInt64(Int.max) { return false }
+                boxSize = Int(size64)
+                headerSize = 16
+            } else if boxSize == 0 {
+                // до конца файла — для префикса непредсказуемо
+                return false
+            }
+            if boxSize < headerSize { return false }
+            if type == "moov" { return true }
+            if type == "mdat" { return false }
+
+            let next = i + boxSize
+            if next <= i { return false }
+            if next > data.count { return false }
+            i = next
+        }
+        return false
+    }
+
+    private func readBEUInt32(_ data: Data, offset: Int) -> UInt32 {
+        let b0 = UInt32(data[offset])
+        let b1 = UInt32(data[offset + 1])
+        let b2 = UInt32(data[offset + 2])
+        let b3 = UInt32(data[offset + 3])
+        return (b0 << 24) | (b1 << 16) | (b2 << 8) | b3
+    }
+
+    private func readBEUInt64(_ data: Data, offset: Int) -> UInt64 {
+        var v: UInt64 = 0
+        for j in 0..<8 {
+            v = (v << 8) | UInt64(data[offset + j])
+        }
+        return v
+    }
+
+    private func readFourCC(_ data: Data, offset: Int) -> String {
+        guard offset + 4 <= data.count else { return "" }
+        let slice = data[offset..<(offset + 4)]
+        return String(bytes: slice, encoding: .ascii) ?? ""
+    }
     
     // MARK: Проверка аудио и перекодирование
     
@@ -1269,7 +1373,10 @@ extension HomeViewController: UICollectionViewDelegate {
             // проверяем прогресс, чтобы потом можно было перекодировать звук.
             var attempts = 0
             while !file.local.isDownloadingCompleted && !Task.isCancelled && attempts < 120 {
-                let downloaded = max(Int64(file.local.downloadedSize), Int64(file.local.downloadedPrefixSize))
+                // До completion показываем прогресс только по непрерывному префиксу.
+                // Иначе можно увидеть 100% при incomplete (sparse/holes) и "зависание" на 100.
+                let prefix = max(Int64(file.local.downloadedPrefixSize), 0)
+                let downloaded = prefix
                 logDownloadProgress(
                     fileId: fileId,
                     downloaded: downloaded,
@@ -1277,7 +1384,7 @@ extension HomeViewController: UICollectionViewDelegate {
                     label: "full-download"
                 )
                 if let progressHandler {
-                    let percent = file.size > 0 ? Double(downloaded) / Double(file.size) : 0
+                    let percent = file.size > 0 ? min(1.0, Double(downloaded) / Double(file.size)) : 0
                     await progressHandler(percent)
                 }
                 try await Task.sleep(nanoseconds: 1_000_000_000) // 1 c
@@ -1286,13 +1393,11 @@ extension HomeViewController: UICollectionViewDelegate {
             }
             logDownloadProgress(
                 fileId: fileId,
-                downloaded: max(Int64(file.local.downloadedSize), Int64(file.local.downloadedPrefixSize)),
+                downloaded: max(Int64(file.local.downloadedPrefixSize), 0),
                 expected: Int64(file.size),
                 label: file.local.isDownloadingCompleted ? "full-download-complete" : "full-download-timeout"
             )
-            if let progressHandler {
-                await progressHandler(1)
-            }
+            if file.local.isDownloadingCompleted, let progressHandler { await progressHandler(1) }
             if file.local.isDownloadingCompleted {
                 return file
             } else {
@@ -1311,6 +1416,11 @@ extension HomeViewController: UICollectionViewDelegate {
             print("[download][\(label)] fileId=\(fileId) downloaded=\(downloaded) expected=0 (unknown size)")
             return
         }
+        let key = "\(label)#\(fileId)"
+        if let last = lastDownloadLog[key], last.downloaded == downloaded, last.expected == expected {
+            return
+        }
+        lastDownloadLog[key] = (downloaded, expected)
         let percent = Double(downloaded) / Double(expected) * 100
         print("[download][\(label)] fileId=\(fileId) \(downloaded)/\(expected) (\(String(format: "%.1f", percent))%)")
     }
