@@ -1271,38 +1271,15 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         let oldClient = client
         client = nil
 
-        // Закрываем старый client неблокирующе (TDLib close иногда может подвиснуть),
-        // и в любом случае продолжаем пересоздание после таймаута.
-        Task { [weak self] in
-            if let oldClient {
-                await self?.closeClientWithTimeout(oldClient, timeoutSeconds: 2.0)
-            }
-            await MainActor.run { [weak self] in
-                self?.finishRestartAuthFlow()
+        // Закрываем старый client в фоне (fire-and-forget), без ожидания
+        if let oldClient {
+            Task {
+                try? await oldClient.close()
             }
         }
-    }
 
-    private func closeClientWithTimeout(_ client: TDLibClient, timeoutSeconds: TimeInterval) async {
-        await withTaskGroup(of: Void.self) { group in
-            group.addTask {
-                await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-                    do {
-                        try client.close(completion: { _ in
-                            cont.resume()
-                        })
-                    } catch {
-                        cont.resume()
-                    }
-                }
-            }
-            group.addTask {
-                let ns = UInt64(timeoutSeconds * 1_000_000_000)
-                try? await Task.sleep(nanoseconds: ns)
-            }
-            await group.next()
-            group.cancelAll()
-        }
+        // Сразу переходим к созданию нового клиента, не ждем закрытия старого
+        finishRestartAuthFlow()
     }
 
     @MainActor
