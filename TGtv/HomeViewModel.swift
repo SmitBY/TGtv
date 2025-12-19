@@ -70,18 +70,17 @@ final class HomeViewModel: ObservableObject {
                 filter: .searchMessagesFilterVideo,
                 fromMessageId: 0,
                 limit: 12,
-                messageThreadId: 0,
                 offset: 0,
                 query: "",
-                savedMessagesTopicId: 0,
-                senderId: nil
+                senderId: nil,
+                topicId: nil
             )
             var items: [HomeVideoItem] = []
             
             for message in result.messages {
                 guard case let .messageVideo(content) = message.content else { continue }
                 
-                let caption = content.caption.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                let caption = content.caption.text.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
                 let title = caption.isEmpty ? "Видео" : caption
                 let video = content.video
                 let videoFile = video.video

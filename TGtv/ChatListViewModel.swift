@@ -68,51 +68,8 @@ final class ChatListViewModel: ObservableObject {
             scheduleChatsUpdate()
         case .updateChatLastMessage(let update):
             if let index = cachedChats.firstIndex(where: { $0.id == update.chatId }) {
-                // Создаем новый экземпляр Chat с обновленным lastMessage
                 let updatedChat = cachedChats[index]
-                let newChat = TDLibKit.Chat(
-                    accentColorId: updatedChat.accentColorId,
-                    actionBar: updatedChat.actionBar,
-                    availableReactions: updatedChat.availableReactions,
-                    background: updatedChat.background,
-                    backgroundCustomEmojiId: updatedChat.backgroundCustomEmojiId,
-                    blockList: updatedChat.blockList,
-                    businessBotManageBar: updatedChat.businessBotManageBar,
-                    canBeDeletedForAllUsers: updatedChat.canBeDeletedForAllUsers,
-                    canBeDeletedOnlyForSelf: updatedChat.canBeDeletedOnlyForSelf,
-                    canBeReported: updatedChat.canBeReported,
-                    chatLists: updatedChat.chatLists,
-                    clientData: updatedChat.clientData,
-                    defaultDisableNotification: updatedChat.defaultDisableNotification,
-                    draftMessage: updatedChat.draftMessage,
-                    emojiStatus: updatedChat.emojiStatus,
-                    hasProtectedContent: updatedChat.hasProtectedContent,
-                    hasScheduledMessages: updatedChat.hasScheduledMessages,
-                    id: updatedChat.id,
-                    isMarkedAsUnread: updatedChat.isMarkedAsUnread,
-                    isTranslatable: updatedChat.isTranslatable,
-                    lastMessage: update.lastMessage, // Обновляем lastMessage
-                    lastReadInboxMessageId: updatedChat.lastReadInboxMessageId,
-                    lastReadOutboxMessageId: updatedChat.lastReadOutboxMessageId,
-                    messageAutoDeleteTime: updatedChat.messageAutoDeleteTime,
-                    messageSenderId: updatedChat.messageSenderId,
-                    notificationSettings: updatedChat.notificationSettings,
-                    pendingJoinRequests: updatedChat.pendingJoinRequests,
-                    permissions: updatedChat.permissions,
-                    photo: updatedChat.photo,
-                    positions: updatedChat.positions,
-                    profileAccentColorId: updatedChat.profileAccentColorId,
-                    profileBackgroundCustomEmojiId: updatedChat.profileBackgroundCustomEmojiId,
-                    replyMarkupMessageId: updatedChat.replyMarkupMessageId,
-                    themeName: updatedChat.themeName,
-                    title: updatedChat.title,
-                    type: updatedChat.type,
-                    unreadCount: updatedChat.unreadCount,
-                    unreadMentionCount: updatedChat.unreadMentionCount,
-                    unreadReactionCount: updatedChat.unreadReactionCount,
-                    videoChat: updatedChat.videoChat,
-                    viewAsTopics: updatedChat.viewAsTopics
-                )
+                let newChat = updatedChat.updating(lastMessage: update.lastMessage)
                 upsertChat(newChat)
                 scheduleChatsUpdate()
             }
@@ -124,51 +81,8 @@ final class ChatListViewModel: ObservableObject {
                 let filteredPositions = currentPositions.filter { $0.list != chatPositionUpdate.position.list }
                 let newPositions = filteredPositions + [chatPositionUpdate.position]
                 
-                // Создаем новую копию чата с обновленными позициями
                 let updatedChat = cachedChats[index]
-                let newChat = TDLibKit.Chat(
-                    accentColorId: updatedChat.accentColorId,
-                    actionBar: updatedChat.actionBar,
-                    availableReactions: updatedChat.availableReactions,
-                    background: updatedChat.background,
-                    backgroundCustomEmojiId: updatedChat.backgroundCustomEmojiId,
-                    blockList: updatedChat.blockList,
-                    businessBotManageBar: updatedChat.businessBotManageBar,
-                    canBeDeletedForAllUsers: updatedChat.canBeDeletedForAllUsers,
-                    canBeDeletedOnlyForSelf: updatedChat.canBeDeletedOnlyForSelf,
-                    canBeReported: updatedChat.canBeReported,
-                    chatLists: updatedChat.chatLists,
-                    clientData: updatedChat.clientData,
-                    defaultDisableNotification: updatedChat.defaultDisableNotification,
-                    draftMessage: updatedChat.draftMessage,
-                    emojiStatus: updatedChat.emojiStatus,
-                    hasProtectedContent: updatedChat.hasProtectedContent,
-                    hasScheduledMessages: updatedChat.hasScheduledMessages,
-                    id: updatedChat.id,
-                    isMarkedAsUnread: updatedChat.isMarkedAsUnread,
-                    isTranslatable: updatedChat.isTranslatable,
-                    lastMessage: updatedChat.lastMessage,
-                    lastReadInboxMessageId: updatedChat.lastReadInboxMessageId,
-                    lastReadOutboxMessageId: updatedChat.lastReadOutboxMessageId,
-                    messageAutoDeleteTime: updatedChat.messageAutoDeleteTime,
-                    messageSenderId: updatedChat.messageSenderId,
-                    notificationSettings: updatedChat.notificationSettings,
-                    pendingJoinRequests: updatedChat.pendingJoinRequests,
-                    permissions: updatedChat.permissions,
-                    photo: updatedChat.photo,
-                    positions: newPositions, // Обновляем позиции
-                    profileAccentColorId: updatedChat.profileAccentColorId,
-                    profileBackgroundCustomEmojiId: updatedChat.profileBackgroundCustomEmojiId,
-                    replyMarkupMessageId: updatedChat.replyMarkupMessageId,
-                    themeName: updatedChat.themeName,
-                    title: updatedChat.title,
-                    type: updatedChat.type,
-                    unreadCount: updatedChat.unreadCount,
-                    unreadMentionCount: updatedChat.unreadMentionCount,
-                    unreadReactionCount: updatedChat.unreadReactionCount,
-                    videoChat: updatedChat.videoChat,
-                    viewAsTopics: updatedChat.viewAsTopics
-                )
+                let newChat = updatedChat.updating(positions: newPositions)
                 upsertChat(newChat)
                 scheduleChatsUpdate()
             }
@@ -176,244 +90,37 @@ final class ChatListViewModel: ObservableObject {
         case .updateChatPhoto(let update):
             if let index = cachedChats.firstIndex(where: { $0.id == update.chatId }) {
                 let updatedChat = cachedChats[index]
-                let newChat = TDLibKit.Chat(
-                    accentColorId: updatedChat.accentColorId,
-                    actionBar: updatedChat.actionBar,
-                    availableReactions: updatedChat.availableReactions,
-                    background: updatedChat.background,
-                    backgroundCustomEmojiId: updatedChat.backgroundCustomEmojiId,
-                    blockList: updatedChat.blockList,
-                    businessBotManageBar: updatedChat.businessBotManageBar,
-                    canBeDeletedForAllUsers: updatedChat.canBeDeletedForAllUsers,
-                    canBeDeletedOnlyForSelf: updatedChat.canBeDeletedOnlyForSelf,
-                    canBeReported: updatedChat.canBeReported,
-                    chatLists: updatedChat.chatLists,
-                    clientData: updatedChat.clientData,
-                    defaultDisableNotification: updatedChat.defaultDisableNotification,
-                    draftMessage: updatedChat.draftMessage,
-                    emojiStatus: updatedChat.emojiStatus,
-                    hasProtectedContent: updatedChat.hasProtectedContent,
-                    hasScheduledMessages: updatedChat.hasScheduledMessages,
-                    id: updatedChat.id,
-                    isMarkedAsUnread: updatedChat.isMarkedAsUnread,
-                    isTranslatable: updatedChat.isTranslatable,
-                    lastMessage: updatedChat.lastMessage,
-                    lastReadInboxMessageId: updatedChat.lastReadInboxMessageId,
-                    lastReadOutboxMessageId: updatedChat.lastReadOutboxMessageId,
-                    messageAutoDeleteTime: updatedChat.messageAutoDeleteTime,
-                    messageSenderId: updatedChat.messageSenderId,
-                    notificationSettings: updatedChat.notificationSettings,
-                    pendingJoinRequests: updatedChat.pendingJoinRequests,
-                    permissions: updatedChat.permissions,
-                    photo: update.photo, // Обновляем фото
-                    positions: updatedChat.positions,
-                    profileAccentColorId: updatedChat.profileAccentColorId,
-                    profileBackgroundCustomEmojiId: updatedChat.profileBackgroundCustomEmojiId,
-                    replyMarkupMessageId: updatedChat.replyMarkupMessageId,
-                    themeName: updatedChat.themeName,
-                    title: updatedChat.title,
-                    type: updatedChat.type,
-                    unreadCount: updatedChat.unreadCount,
-                    unreadMentionCount: updatedChat.unreadMentionCount,
-                    unreadReactionCount: updatedChat.unreadReactionCount,
-                    videoChat: updatedChat.videoChat,
-                    viewAsTopics: updatedChat.viewAsTopics
-                )
+                let newChat = updatedChat.updating(photo: update.photo)
                 upsertChat(newChat)
                 scheduleChatsUpdate()
             }
         case .updateChatTitle(let update):
             if let index = cachedChats.firstIndex(where: { $0.id == update.chatId }) {
                 let updatedChat = cachedChats[index]
-                let newChat = TDLibKit.Chat(
-                    accentColorId: updatedChat.accentColorId,
-                    actionBar: updatedChat.actionBar,
-                    availableReactions: updatedChat.availableReactions,
-                    background: updatedChat.background,
-                    backgroundCustomEmojiId: updatedChat.backgroundCustomEmojiId,
-                    blockList: updatedChat.blockList,
-                    businessBotManageBar: updatedChat.businessBotManageBar,
-                    canBeDeletedForAllUsers: updatedChat.canBeDeletedForAllUsers,
-                    canBeDeletedOnlyForSelf: updatedChat.canBeDeletedOnlyForSelf,
-                    canBeReported: updatedChat.canBeReported,
-                    chatLists: updatedChat.chatLists,
-                    clientData: updatedChat.clientData,
-                    defaultDisableNotification: updatedChat.defaultDisableNotification,
-                    draftMessage: updatedChat.draftMessage,
-                    emojiStatus: updatedChat.emojiStatus,
-                    hasProtectedContent: updatedChat.hasProtectedContent,
-                    hasScheduledMessages: updatedChat.hasScheduledMessages,
-                    id: updatedChat.id,
-                    isMarkedAsUnread: updatedChat.isMarkedAsUnread,
-                    isTranslatable: updatedChat.isTranslatable,
-                    lastMessage: updatedChat.lastMessage,
-                    lastReadInboxMessageId: updatedChat.lastReadInboxMessageId,
-                    lastReadOutboxMessageId: updatedChat.lastReadOutboxMessageId,
-                    messageAutoDeleteTime: updatedChat.messageAutoDeleteTime,
-                    messageSenderId: updatedChat.messageSenderId,
-                    notificationSettings: updatedChat.notificationSettings,
-                    pendingJoinRequests: updatedChat.pendingJoinRequests,
-                    permissions: updatedChat.permissions,
-                    photo: updatedChat.photo,
-                    positions: updatedChat.positions,
-                    profileAccentColorId: updatedChat.profileAccentColorId,
-                    profileBackgroundCustomEmojiId: updatedChat.profileBackgroundCustomEmojiId,
-                    replyMarkupMessageId: updatedChat.replyMarkupMessageId,
-                    themeName: updatedChat.themeName,
-                    title: update.title, // Обновляем название
-                    type: updatedChat.type,
-                    unreadCount: updatedChat.unreadCount,
-                    unreadMentionCount: updatedChat.unreadMentionCount,
-                    unreadReactionCount: updatedChat.unreadReactionCount,
-                    videoChat: updatedChat.videoChat,
-                    viewAsTopics: updatedChat.viewAsTopics
-                )
+                let newChat = updatedChat.updating(title: update.title)
                 upsertChat(newChat)
                 scheduleChatsUpdate()
             }
         case .updateChatUnreadMentionCount(let update):
             if let index = cachedChats.firstIndex(where: { $0.id == update.chatId }) {
                 let updatedChat = cachedChats[index]
-                let newChat = TDLibKit.Chat(
-                    accentColorId: updatedChat.accentColorId,
-                    actionBar: updatedChat.actionBar,
-                    availableReactions: updatedChat.availableReactions,
-                    background: updatedChat.background,
-                    backgroundCustomEmojiId: updatedChat.backgroundCustomEmojiId,
-                    blockList: updatedChat.blockList,
-                    businessBotManageBar: updatedChat.businessBotManageBar,
-                    canBeDeletedForAllUsers: updatedChat.canBeDeletedForAllUsers,
-                    canBeDeletedOnlyForSelf: updatedChat.canBeDeletedOnlyForSelf,
-                    canBeReported: updatedChat.canBeReported,
-                    chatLists: updatedChat.chatLists,
-                    clientData: updatedChat.clientData,
-                    defaultDisableNotification: updatedChat.defaultDisableNotification,
-                    draftMessage: updatedChat.draftMessage,
-                    emojiStatus: updatedChat.emojiStatus,
-                    hasProtectedContent: updatedChat.hasProtectedContent,
-                    hasScheduledMessages: updatedChat.hasScheduledMessages,
-                    id: updatedChat.id,
-                    isMarkedAsUnread: updatedChat.isMarkedAsUnread,
-                    isTranslatable: updatedChat.isTranslatable,
-                    lastMessage: updatedChat.lastMessage,
-                    lastReadInboxMessageId: updatedChat.lastReadInboxMessageId,
-                    lastReadOutboxMessageId: updatedChat.lastReadOutboxMessageId,
-                    messageAutoDeleteTime: updatedChat.messageAutoDeleteTime,
-                    messageSenderId: updatedChat.messageSenderId,
-                    notificationSettings: updatedChat.notificationSettings,
-                    pendingJoinRequests: updatedChat.pendingJoinRequests,
-                    permissions: updatedChat.permissions,
-                    photo: updatedChat.photo,
-                    positions: updatedChat.positions,
-                    profileAccentColorId: updatedChat.profileAccentColorId,
-                    profileBackgroundCustomEmojiId: updatedChat.profileBackgroundCustomEmojiId,
-                    replyMarkupMessageId: updatedChat.replyMarkupMessageId,
-                    themeName: updatedChat.themeName,
-                    title: updatedChat.title,
-                    type: updatedChat.type,
-                    unreadCount: updatedChat.unreadCount,
-                    unreadMentionCount: update.unreadMentionCount, // Обновляем количество упоминаний
-                    unreadReactionCount: updatedChat.unreadReactionCount,
-                    videoChat: updatedChat.videoChat,
-                    viewAsTopics: updatedChat.viewAsTopics
-                )
+                let newChat = updatedChat.updating(unreadMentionCount: update.unreadMentionCount)
                 upsertChat(newChat)
                 scheduleChatsUpdate()
             }
         case .updateChatUnreadReactionCount(let update):
             if let index = cachedChats.firstIndex(where: { $0.id == update.chatId }) {
                 let updatedChat = cachedChats[index]
-                let newChat = TDLibKit.Chat(
-                    accentColorId: updatedChat.accentColorId,
-                    actionBar: updatedChat.actionBar,
-                    availableReactions: updatedChat.availableReactions,
-                    background: updatedChat.background,
-                    backgroundCustomEmojiId: updatedChat.backgroundCustomEmojiId,
-                    blockList: updatedChat.blockList,
-                    businessBotManageBar: updatedChat.businessBotManageBar,
-                    canBeDeletedForAllUsers: updatedChat.canBeDeletedForAllUsers,
-                    canBeDeletedOnlyForSelf: updatedChat.canBeDeletedOnlyForSelf,
-                    canBeReported: updatedChat.canBeReported,
-                    chatLists: updatedChat.chatLists,
-                    clientData: updatedChat.clientData,
-                    defaultDisableNotification: updatedChat.defaultDisableNotification,
-                    draftMessage: updatedChat.draftMessage,
-                    emojiStatus: updatedChat.emojiStatus,
-                    hasProtectedContent: updatedChat.hasProtectedContent,
-                    hasScheduledMessages: updatedChat.hasScheduledMessages,
-                    id: updatedChat.id,
-                    isMarkedAsUnread: updatedChat.isMarkedAsUnread,
-                    isTranslatable: updatedChat.isTranslatable,
-                    lastMessage: updatedChat.lastMessage,
-                    lastReadInboxMessageId: updatedChat.lastReadInboxMessageId,
-                    lastReadOutboxMessageId: updatedChat.lastReadOutboxMessageId,
-                    messageAutoDeleteTime: updatedChat.messageAutoDeleteTime,
-                    messageSenderId: updatedChat.messageSenderId,
-                    notificationSettings: updatedChat.notificationSettings,
-                    pendingJoinRequests: updatedChat.pendingJoinRequests,
-                    permissions: updatedChat.permissions,
-                    photo: updatedChat.photo,
-                    positions: updatedChat.positions,
-                    profileAccentColorId: updatedChat.profileAccentColorId,
-                    profileBackgroundCustomEmojiId: updatedChat.profileBackgroundCustomEmojiId,
-                    replyMarkupMessageId: updatedChat.replyMarkupMessageId,
-                    themeName: updatedChat.themeName,
-                    title: updatedChat.title,
-                    type: updatedChat.type,
-                    unreadCount: updatedChat.unreadCount,
-                    unreadMentionCount: updatedChat.unreadMentionCount,
-                    unreadReactionCount: update.unreadReactionCount, // Обновляем количество реакций
-                    videoChat: updatedChat.videoChat,
-                    viewAsTopics: updatedChat.viewAsTopics
-                )
+                let newChat = updatedChat.updating(unreadReactionCount: update.unreadReactionCount)
                 upsertChat(newChat)
                 scheduleChatsUpdate()
             }
         case .updateChatReadInbox(let update):
             if let index = cachedChats.firstIndex(where: { $0.id == update.chatId }) {
                 let updatedChat = cachedChats[index]
-                let newChat = TDLibKit.Chat(
-                    accentColorId: updatedChat.accentColorId,
-                    actionBar: updatedChat.actionBar,
-                    availableReactions: updatedChat.availableReactions,
-                    background: updatedChat.background,
-                    backgroundCustomEmojiId: updatedChat.backgroundCustomEmojiId,
-                    blockList: updatedChat.blockList,
-                    businessBotManageBar: updatedChat.businessBotManageBar,
-                    canBeDeletedForAllUsers: updatedChat.canBeDeletedForAllUsers,
-                    canBeDeletedOnlyForSelf: updatedChat.canBeDeletedOnlyForSelf,
-                    canBeReported: updatedChat.canBeReported,
-                    chatLists: updatedChat.chatLists,
-                    clientData: updatedChat.clientData,
-                    defaultDisableNotification: updatedChat.defaultDisableNotification,
-                    draftMessage: updatedChat.draftMessage,
-                    emojiStatus: updatedChat.emojiStatus,
-                    hasProtectedContent: updatedChat.hasProtectedContent,
-                    hasScheduledMessages: updatedChat.hasScheduledMessages,
-                    id: updatedChat.id,
-                    isMarkedAsUnread: updatedChat.isMarkedAsUnread,
-                    isTranslatable: updatedChat.isTranslatable,
-                    lastMessage: updatedChat.lastMessage,
-                    lastReadInboxMessageId: update.lastReadInboxMessageId, // Обновляем ID последнего прочитанного входящего сообщения
-                    lastReadOutboxMessageId: updatedChat.lastReadOutboxMessageId,
-                    messageAutoDeleteTime: updatedChat.messageAutoDeleteTime,
-                    messageSenderId: updatedChat.messageSenderId,
-                    notificationSettings: updatedChat.notificationSettings,
-                    pendingJoinRequests: updatedChat.pendingJoinRequests,
-                    permissions: updatedChat.permissions,
-                    photo: updatedChat.photo,
-                    positions: updatedChat.positions,
-                    profileAccentColorId: updatedChat.profileAccentColorId,
-                    profileBackgroundCustomEmojiId: updatedChat.profileBackgroundCustomEmojiId,
-                    replyMarkupMessageId: updatedChat.replyMarkupMessageId,
-                    themeName: updatedChat.themeName,
-                    title: updatedChat.title,
-                    type: updatedChat.type,
-                    unreadCount: update.unreadCount, // Обновляем количество непрочитанных сообщений
-                    unreadMentionCount: updatedChat.unreadMentionCount,
-                    unreadReactionCount: updatedChat.unreadReactionCount,
-                    videoChat: updatedChat.videoChat,
-                    viewAsTopics: updatedChat.viewAsTopics
+                let newChat = updatedChat.updating(
+                    unreadCount: update.unreadCount,
+                    lastReadInboxMessageId: update.lastReadInboxMessageId
                 )
                 upsertChat(newChat)
                 scheduleChatsUpdate()
@@ -421,49 +128,7 @@ final class ChatListViewModel: ObservableObject {
         case .updateChatReadOutbox(let update):
             if let index = cachedChats.firstIndex(where: { $0.id == update.chatId }) {
                 let updatedChat = cachedChats[index]
-                let newChat = TDLibKit.Chat(
-                    accentColorId: updatedChat.accentColorId,
-                    actionBar: updatedChat.actionBar,
-                    availableReactions: updatedChat.availableReactions,
-                    background: updatedChat.background,
-                    backgroundCustomEmojiId: updatedChat.backgroundCustomEmojiId,
-                    blockList: updatedChat.blockList,
-                    businessBotManageBar: updatedChat.businessBotManageBar,
-                    canBeDeletedForAllUsers: updatedChat.canBeDeletedForAllUsers,
-                    canBeDeletedOnlyForSelf: updatedChat.canBeDeletedOnlyForSelf,
-                    canBeReported: updatedChat.canBeReported,
-                    chatLists: updatedChat.chatLists,
-                    clientData: updatedChat.clientData,
-                    defaultDisableNotification: updatedChat.defaultDisableNotification,
-                    draftMessage: updatedChat.draftMessage,
-                    emojiStatus: updatedChat.emojiStatus,
-                    hasProtectedContent: updatedChat.hasProtectedContent,
-                    hasScheduledMessages: updatedChat.hasScheduledMessages,
-                    id: updatedChat.id,
-                    isMarkedAsUnread: updatedChat.isMarkedAsUnread,
-                    isTranslatable: updatedChat.isTranslatable,
-                    lastMessage: updatedChat.lastMessage,
-                    lastReadInboxMessageId: updatedChat.lastReadInboxMessageId,
-                    lastReadOutboxMessageId: update.lastReadOutboxMessageId, // Обновляем ID последнего прочитанного исходящего сообщения
-                    messageAutoDeleteTime: updatedChat.messageAutoDeleteTime,
-                    messageSenderId: updatedChat.messageSenderId,
-                    notificationSettings: updatedChat.notificationSettings,
-                    pendingJoinRequests: updatedChat.pendingJoinRequests,
-                    permissions: updatedChat.permissions,
-                    photo: updatedChat.photo,
-                    positions: updatedChat.positions,
-                    profileAccentColorId: updatedChat.profileAccentColorId,
-                    profileBackgroundCustomEmojiId: updatedChat.profileBackgroundCustomEmojiId,
-                    replyMarkupMessageId: updatedChat.replyMarkupMessageId,
-                    themeName: updatedChat.themeName,
-                    title: updatedChat.title,
-                    type: updatedChat.type,
-                    unreadCount: updatedChat.unreadCount,
-                    unreadMentionCount: updatedChat.unreadMentionCount,
-                    unreadReactionCount: updatedChat.unreadReactionCount,
-                    videoChat: updatedChat.videoChat,
-                    viewAsTopics: updatedChat.viewAsTopics
-                )
+                let newChat = updatedChat.updating(lastReadOutboxMessageId: update.lastReadOutboxMessageId)
                 upsertChat(newChat)
                 updateChats()
             }
@@ -815,4 +480,63 @@ final class ChatListViewModel: ObservableObject {
         return result
     }
     
-} 
+}
+
+private extension TDLibKit.Chat {
+    func updating(
+        lastMessage: Message? = nil,
+        positions: [ChatPosition]? = nil,
+        photo: ChatPhotoInfo? = nil,
+        title: String? = nil,
+        unreadCount: Int? = nil,
+        unreadMentionCount: Int? = nil,
+        unreadReactionCount: Int? = nil,
+        lastReadInboxMessageId: Int64? = nil,
+        lastReadOutboxMessageId: Int64? = nil
+    ) -> TDLibKit.Chat {
+        TDLibKit.Chat(
+            accentColorId: self.accentColorId,
+            actionBar: self.actionBar,
+            availableReactions: self.availableReactions,
+            background: self.background,
+            backgroundCustomEmojiId: self.backgroundCustomEmojiId,
+            blockList: self.blockList,
+            businessBotManageBar: self.businessBotManageBar,
+            canBeDeletedForAllUsers: self.canBeDeletedForAllUsers,
+            canBeDeletedOnlyForSelf: self.canBeDeletedOnlyForSelf,
+            canBeReported: self.canBeReported,
+            chatLists: self.chatLists,
+            clientData: self.clientData,
+            defaultDisableNotification: self.defaultDisableNotification,
+            draftMessage: self.draftMessage,
+            emojiStatus: self.emojiStatus,
+            hasProtectedContent: self.hasProtectedContent,
+            hasScheduledMessages: self.hasScheduledMessages,
+            id: self.id,
+            isMarkedAsUnread: self.isMarkedAsUnread,
+            isTranslatable: self.isTranslatable,
+            lastMessage: lastMessage ?? self.lastMessage,
+            lastReadInboxMessageId: lastReadInboxMessageId ?? self.lastReadInboxMessageId,
+            lastReadOutboxMessageId: lastReadOutboxMessageId ?? self.lastReadOutboxMessageId,
+            messageAutoDeleteTime: self.messageAutoDeleteTime,
+            messageSenderId: self.messageSenderId,
+            notificationSettings: self.notificationSettings,
+            pendingJoinRequests: self.pendingJoinRequests,
+            permissions: self.permissions,
+            photo: photo ?? self.photo,
+            positions: positions ?? self.positions,
+            profileAccentColorId: self.profileAccentColorId,
+            profileBackgroundCustomEmojiId: self.profileBackgroundCustomEmojiId,
+            replyMarkupMessageId: self.replyMarkupMessageId,
+            theme: self.theme,
+            title: title ?? self.title,
+            type: self.type,
+            unreadCount: unreadCount ?? self.unreadCount,
+            unreadMentionCount: unreadMentionCount ?? self.unreadMentionCount,
+            unreadReactionCount: unreadReactionCount ?? self.unreadReactionCount,
+            upgradedGiftColors: self.upgradedGiftColors,
+            videoChat: self.videoChat,
+            viewAsTopics: self.viewAsTopics
+        )
+    }
+}

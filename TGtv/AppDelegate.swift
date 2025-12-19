@@ -245,6 +245,7 @@ extension TDLibKit.Update {
                     let canReadAllGroupMessages = typeJson["can_read_all_group_messages"] as? Bool ?? false
                     // let canSupportInlineQueries = typeJson["can_support_inline_queries"] as? Bool ?? false // Закомментировано из-за ошибки компилятора
                     let hasMainWebApp = typeJson["has_main_web_app"] as? Bool ?? false
+                    let hasTopics = typeJson["has_topics"] as? Bool ?? false
                     let inlineQueryPlaceholder = typeJson["inline_query_placeholder"] as? String ?? ""
                     let isInline = typeJson["is_inline"] as? Bool ?? false
                     let needLocation = typeJson["need_location"] as? Bool ?? false
@@ -253,12 +254,11 @@ extension TDLibKit.Update {
                         activeUserCount: activeUserCount,
                         canBeAddedToAttachmentMenu: canBeAddedToAttachmentMenu,
                         canBeEdited: canBeEdited,
-                        // canBeInvitedToGroups: canBeInvitedToGroups, // Закомментировано из-за ошибки компилятора
                         canConnectToBusiness: canConnectToBusiness,
                         canJoinGroups: canJoinGroups,
                         canReadAllGroupMessages: canReadAllGroupMessages,
-                        // canSupportInlineQueries: canSupportInlineQueries, // Закомментировано из-за ошибки компилятора
                         hasMainWebApp: hasMainWebApp,
+                        hasTopics: hasTopics,
                         inlineQueryPlaceholder: inlineQueryPlaceholder,
                         isInline: isInline,
                         needLocation: needLocation
@@ -276,13 +276,12 @@ extension TDLibKit.Update {
             // ... добавьте остальные поля по необходимости, делая их опциональными или с default значениями
 
             let user = TDLibKit.User(
-                accentColorId: accentColorId ?? 0, // Предоставляем значение по умолчанию 0
+                accentColorId: accentColorId ?? 0,
+                activeStoryState: nil, // TODO: Parse activeStoryState
                 addedToAttachmentMenu: userJson["added_to_attachment_menu"] as? Bool ?? false,
                 backgroundCustomEmojiId: TdInt64(Int64(backgroundCustomEmojiId) ?? 0),
-                emojiStatus: nil, // TODO: распарсить emojiStatus
+                emojiStatus: nil,
                 firstName: firstName,
-                hasActiveStories: userJson["has_active_stories"] as? Bool ?? false,
-                hasUnreadActiveStories: userJson["has_unread_active_stories"] as? Bool ?? false,
                 haveAccess: userJson["have_access"] as? Bool ?? true,
                 id: userId,
                 isCloseFriend: userJson["is_close_friend"] as? Bool ?? false,
@@ -294,15 +293,16 @@ extension TDLibKit.Update {
                 lastName: lastName,
                 paidMessageStarCount: Int64(userJson["paid_message_star_count"] as? Int ?? 0),
                 phoneNumber: phoneNumber,
-                profileAccentColorId: profileAccentColorId ?? -1, // Предоставляем значение по умолчанию -1
+                profileAccentColorId: profileAccentColorId ?? -1,
                 profileBackgroundCustomEmojiId: TdInt64(Int64(profileBackgroundCustomEmojiId) ?? 0),
-                profilePhoto: nil, // TODO: распарсить profilePhoto
-                restrictionReason: userJson["restriction_reason"] as? String ?? "",
+                profilePhoto: nil,
+                restrictionInfo: nil, // TODO: Parse restrictionInfo
                 restrictsNewChats: userJson["restricts_new_chats"] as? Bool ?? false,
                 status: status,
                 type: userType,
-                usernames: nil, // TODO: распарсить usernames
-                verificationStatus: nil // TODO: распарсить verificationStatus
+                upgradedGiftColors: nil, // TODO: Parse upgradedGiftColors
+                usernames: nil,
+                verificationStatus: nil
             )
             return .updateUser(.init(user: user))
         }
@@ -354,35 +354,38 @@ extension TDLibKit.Update {
         let isBroadcastGroup = json["is_broadcast_group"] as? Bool ?? false
         let isForum = json["is_forum"] as? Bool ?? false
         let verificationStatus = parseVerificationStatus(fromJson: json["verification_status"] as? [String: Any]) // Используем парсер (пока nil)
-        let hasSensitiveContent = json["has_sensitive_content"] as? Bool ?? false
-        let restrictionReason = json["restriction_reason"] as? String ?? ""
+        let _ = json["has_sensitive_content"] as? Bool ?? false
+        let _ = json["restriction_reason"] as? String ?? ""
         let paidMessageStarCount = Int64(json["paid_message_star_count"] as? Int ?? 0)
-        let hasActiveStories = json["has_active_stories"] as? Bool ?? false
-        let hasUnreadActiveStories = json["has_unread_active_stories"] as? Bool ?? false
+        let _ = json["has_active_stories"] as? Bool ?? false
+        let _ = json["has_unread_active_stories"] as? Bool ?? false
 
         return TDLibKit.Supergroup(
+            activeStoryState: nil, // TODO: Parse activeStoryState
             boostLevel: boostLevel,
             date: date,
-            hasActiveStories: hasActiveStories,
+            hasAutomaticTranslation: json["has_automatic_translation"] as? Bool ?? false,
+            hasDirectMessagesGroup: json["has_direct_messages_group"] as? Bool ?? false,
+            hasForumTabs: json["has_forum_tabs"] as? Bool ?? false,
             hasLinkedChat: hasLinkedChat,
             hasLocation: hasLocation,
-            hasSensitiveContent: hasSensitiveContent,
-            hasUnreadActiveStories: hasUnreadActiveStories,
             id: id,
+            isAdministeredDirectMessagesGroup: json["is_administered_direct_messages_group"] as? Bool ?? false,
             isBroadcastGroup: isBroadcastGroup,
             isChannel: isChannel,
+            isDirectMessagesGroup: json["is_direct_messages_group"] as? Bool ?? false,
             isForum: isForum,
             isSlowModeEnabled: isSlowModeEnabled,
             joinByRequest: joinByRequest,
             joinToSendMessages: joinToSendMessages,
             memberCount: memberCount,
             paidMessageStarCount: paidMessageStarCount,
-            restrictionReason: restrictionReason,
+            restrictionInfo: nil, // TODO: Parse restrictionInfo
             showMessageSender: showMessageSender,
             signMessages: signMessages,
             status: status,
             usernames: usernames,
-            verificationStatus: verificationStatus // Добавляем параметр verificationStatus
+            verificationStatus: verificationStatus
         )
     }
 
@@ -429,7 +432,7 @@ extension TDLibKit.Update {
         let messageAutoDeleteTime = json["message_auto_delete_time"] as? Int ?? 0
         // emoji_status - TODO: parse EmojiStatus
         // background - TODO: parse ChatBackground
-        let themeName = json["theme_name"] as? String ?? ""
+        let _ = json["theme_name"] as? String ?? ""
         // action_bar - TODO: parse ChatActionBar
         // business_bot_manage_bar - TODO: parse BusinessBotManageBar
         let videoChat = parseVideoChat(fromJson: json["video_chat"] as? [String: Any]) // Optional
@@ -472,15 +475,15 @@ extension TDLibKit.Update {
             profileAccentColorId: profileAccentColorId,
             profileBackgroundCustomEmojiId: profileBackgroundCustomEmojiId,
             replyMarkupMessageId: replyMarkupMessageId,
-            themeName: themeName,
+            theme: nil, // TODO: Parse ChatTheme
             title: title,
             type: type,
             unreadCount: unreadCount,
             unreadMentionCount: unreadMentionCount,
             unreadReactionCount: unreadReactionCount,
+            upgradedGiftColors: nil, // TODO: Parse UpgradedGiftColors
             videoChat: videoChat ?? VideoChat(defaultParticipantId: nil, groupCallId: 0, hasParticipants: false), // Предоставляем default, если nil
             viewAsTopics: viewAsTopics
-            // TODO: Добавить недостающие поля, если они есть в вашей версии TDLibKit
         )
     }
 
@@ -515,6 +518,7 @@ extension TDLibKit.Update {
                 canEditStories: rightsJson?["can_edit_stories"] as? Bool ?? false,
                 canInviteUsers: rightsJson?["can_invite_users"] as? Bool ?? false,
                 canManageChat: rightsJson?["can_manage_chat"] as? Bool ?? false,
+                canManageDirectMessages: rightsJson?["can_manage_direct_messages"] as? Bool ?? false,
                 canManageTopics: rightsJson?["can_manage_topics"] as? Bool ?? false,
                 canManageVideoChats: rightsJson?["can_manage_video_chats"] as? Bool ?? false,
                 canPinMessages: rightsJson?["can_pin_messages"] as? Bool ?? false,
@@ -568,7 +572,7 @@ extension TDLibKit.Update {
               let disabledUsernames = json["disabled_usernames"] as? [String],
               let editableUsername = json["editable_username"] as? String
         else { return nil } // Usernames может быть nil
-        return .init(activeUsernames: activeUsernames, disabledUsernames: disabledUsernames, editableUsername: editableUsername)
+        return .init(activeUsernames: activeUsernames, collectibleUsernames: json["collectible_usernames"] as? [String] ?? [], disabledUsernames: disabledUsernames, editableUsername: editableUsername)
     }
 
     private static func parseChatType(fromJson json: [String: Any]) -> ChatType? {
@@ -733,22 +737,22 @@ extension TDLibKit.Update {
          let effectIdInt64 = Int64(effectIdString) ?? 0 // Сначала в Int64
          let effectId = TdInt64(effectIdInt64) // Потом в TdInt64
          let forwardInfo: MessageForwardInfo? = nil // TODO
-         let hasSensitiveContent = json["has_sensitive_content"] as? Bool ?? false
+         let _ = json["has_sensitive_content"] as? Bool ?? false // Deprecated in TDLib 1.8.58+
          let hasTimestampedMedia = json["has_timestamped_media"] as? Bool ?? false
          let importInfo: MessageImportInfo? = nil // TODO
          let interactionInfo: MessageInteractionInfo? = nil // TODO: parseMessageInteractionInfo
          let isChannelPost = json["is_channel_post"] as? Bool ?? false
          let isFromOffline = json["is_from_offline"] as? Bool ?? false
          let isPinned = json["is_pinned"] as? Bool ?? false
-         let isTopicMessage = json["is_topic_message"] as? Bool ?? false
-         let mediaAlbumId = TdInt64(Int64(json["media_album_id"] as? String ?? "0") ?? 0)
-         let messageThreadId = json["message_thread_id"] as? Int64 ?? 0
-         let paidMessageStarCount = Int64(json["paid_message_star_count"] as? Int ?? 0)
-         let _ : Int64 = 0 // TODO: replyInChatId
-         let replyMarkup: ReplyMarkup? = nil // TODO: parseReplyMarkup
-         let replyTo: MessageReplyTo? = nil // TODO: parseMessageReplyTo
-         let restrictionReason = json["restriction_reason"] as? String ?? ""
-         let savedMessagesTopicId = json["saved_messages_topic_id"] as? Int64 ?? 0
+        let _ = json["is_topic_message"] as? Bool ?? false
+        let mediaAlbumId = TdInt64(Int64(json["media_album_id"] as? String ?? "0") ?? 0)
+        let _ = json["message_thread_id"] as? Int64 ?? 0
+        let paidMessageStarCount = Int64(json["paid_message_star_count"] as? Int ?? 0)
+        let _ : Int64 = 0 // TODO: replyInChatId
+        let replyMarkup: ReplyMarkup? = nil // TODO: parseReplyMarkup
+        let replyTo: MessageReplyTo? = nil // TODO: parseMessageReplyTo
+        let _ = json["restriction_reason"] as? String ?? ""
+        let _ = json["saved_messages_topic_id"] as? Int64 ?? 0
          let schedulingState: MessageSchedulingState? = nil // TODO: parseMessageSchedulingState
          let autoDeleteIn = json["auto_delete_in"] as? Double ?? 0.0
          let selfDestructIn = json["self_destruct_in"] as? Double ?? 0.0 // Возвращаем selfDestructIn
@@ -766,45 +770,45 @@ extension TDLibKit.Update {
             return nil
          }
 
-         return Message(
-             authorSignature: authorSignature,
-             autoDeleteIn: autoDeleteIn,
-             canBeSaved: canBeSaved,
-             chatId: chatId,
-             containsUnreadMention: containsUnreadMention,
-             content: content,
-             date: date,
-             editDate: editDate,
-             effectId: effectId,
-             factCheck: nil,
-             forwardInfo: forwardInfo,
-             hasSensitiveContent: hasSensitiveContent,
-             hasTimestampedMedia: hasTimestampedMedia,
-             id: id,
-             importInfo: importInfo,
-             interactionInfo: interactionInfo,
-             isChannelPost: isChannelPost,
-             isFromOffline: isFromOffline,
-             isOutgoing: isOutgoing,
-             isPinned: isPinned,
-             isTopicMessage: isTopicMessage,
-             mediaAlbumId: mediaAlbumId,
-             messageThreadId: messageThreadId,
-             paidMessageStarCount: paidMessageStarCount,
-             replyMarkup: replyMarkup,
-             replyTo: replyTo,
-             restrictionReason: restrictionReason,
-             savedMessagesTopicId: savedMessagesTopicId,
-             schedulingState: schedulingState,
-             selfDestructIn: selfDestructIn,
-             selfDestructType: selfDestructType,
-             senderBoostCount: senderBoostCount,
-             senderBusinessBotUserId: senderBusinessBotUserId,
-             senderId: senderId,
-             sendingState: sendingState,
-             unreadReactions: unreadReactions,
-             viaBotUserId: viaBotUserId
-         )
+        return Message(
+            authorSignature: authorSignature,
+            autoDeleteIn: autoDeleteIn,
+            canBeSaved: canBeSaved,
+            chatId: chatId,
+            containsUnreadMention: containsUnreadMention,
+            content: content,
+            date: date,
+            editDate: editDate,
+            effectId: effectId,
+            factCheck: nil,
+            forwardInfo: forwardInfo,
+            hasTimestampedMedia: hasTimestampedMedia,
+            id: id,
+            importInfo: importInfo,
+            interactionInfo: interactionInfo,
+            isChannelPost: isChannelPost,
+            isFromOffline: isFromOffline,
+            isOutgoing: isOutgoing,
+            isPaidStarSuggestedPost: false, // Default
+            isPaidTonSuggestedPost: false, // Default
+            isPinned: isPinned,
+            mediaAlbumId: mediaAlbumId,
+            paidMessageStarCount: paidMessageStarCount,
+            replyMarkup: replyMarkup,
+            replyTo: replyTo,
+            restrictionInfo: nil, // TODO: Parse restrictionInfo
+            schedulingState: schedulingState,
+            selfDestructIn: selfDestructIn,
+            selfDestructType: selfDestructType,
+            senderBoostCount: senderBoostCount,
+            senderBusinessBotUserId: senderBusinessBotUserId,
+            senderId: senderId,
+            sendingState: sendingState,
+            suggestedPostInfo: nil, // TODO: Parse suggestedPostInfo
+            topicId: nil, // TODO: Parse topicId
+            unreadReactions: unreadReactions,
+            viaBotUserId: viaBotUserId
+        )
     }
 
     // TODO: Реализовать парсеры для:
@@ -883,7 +887,7 @@ extension TDLibKit.Update {
         let muteFor = json["mute_for"] as? Int ?? 0
         let muteStories = json["mute_stories"] as? Bool ?? false
         let showPreview = json["show_preview"] as? Bool ?? false
-        let showStorySender = json["show_story_sender"] as? Bool ?? true
+        let showStoryPoster = json["show_story_poster"] as? Bool ?? true
         let soundId = TdInt64(Int64(json["sound_id"] as? String ?? "-1") ?? -1)
         let storySoundId = TdInt64(Int64(json["story_sound_id"] as? String ?? "-1") ?? -1)
         let useDefaultDisableMentionNotifications = json["use_default_disable_mention_notifications"] as? Bool ?? true
@@ -891,7 +895,8 @@ extension TDLibKit.Update {
         let useDefaultMuteFor = json["use_default_mute_for"] as? Bool ?? true
         let useDefaultMuteStories = json["use_default_mute_stories"] as? Bool ?? true
         let useDefaultShowPreview = json["use_default_show_preview"] as? Bool ?? true
-        let useDefaultShowStorySender = json["use_default_show_story_sender"] as? Bool ?? true
+        let useDefaultShowStoryPoster = json["use_default_show_story_poster"] as? Bool ?? true
+        let _ = json["sound"] as? String // TODO: parse sound?
         let useDefaultSound = json["use_default_sound"] as? Bool ?? true
         let useDefaultStorySound = json["use_default_story_sound"] as? Bool ?? true
 
@@ -901,7 +906,7 @@ extension TDLibKit.Update {
             muteFor: muteFor,
             muteStories: muteStories,
             showPreview: showPreview,
-            showStorySender: showStorySender,
+            showStoryPoster: showStoryPoster,
             soundId: soundId,
             storySoundId: storySoundId,
             useDefaultDisableMentionNotifications: useDefaultDisableMentionNotifications,
@@ -909,7 +914,7 @@ extension TDLibKit.Update {
             useDefaultMuteFor: useDefaultMuteFor,
             useDefaultMuteStories: useDefaultMuteStories,
             useDefaultShowPreview: useDefaultShowPreview,
-            useDefaultShowStorySender: useDefaultShowStorySender,
+            useDefaultShowStoryPoster: useDefaultShowStoryPoster,
             useDefaultSound: useDefaultSound,
             useDefaultStorySound: useDefaultStorySound
         )
@@ -985,8 +990,6 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     private let selectedChatsStore = SelectedChatsStore()
     // Последовательная очередь для обработки обновлений TDLib, чтобы избежать одновременных вызовов receive
     private let tdUpdateQueue = DispatchQueue(label: "tgtd.updates.queue")
-    // Защита от повторного/параллельного перезапуска auth flow
-    private var isRestartingAuthFlow = false
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
         print("AppDelegate: Запуск приложения")
@@ -1066,11 +1069,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     }
 
     private func setupTDLibClient() {
-        // Важно: TDLibKit требует ОДИН TDLibClientManager на приложение.
-        // Он владеет единственным receive-loop (td_receive) и не должен создаваться повторно.
-        if clientManager == nil {
-            clientManager = TDLibClientManager()
-        }
+        clientManager = TDLibClientManager()
         client = clientManager?.createClient(updateHandler: { [weak self] (data: Data, client: TDLibClient) in
             // Гарантируем, что обработка обновлений выполняется последовательно на одной очереди
             self?.tdUpdateQueue.async { [weak self] in
@@ -1128,9 +1127,6 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     private func process(update: TDLibKit.Update) {
         Task { @MainActor [weak self] in
             guard let self else { return }
-            if case let TDLibKit.Update.updateAuthorizationState(stateUpdate) = update {
-                print("AppDelegate: updateAuthorizationState = \(stateUpdate.authorizationState)")
-            }
             self.authService?.handleUpdate(update)
             
             if case let TDLibKit.Update.updateFile(fileUpdate) = update {
@@ -1191,30 +1187,39 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         guard builder.system == .main else { return }
         
         let settingsAction = UIAction(title: "Настройки…") { [weak self] _ in
-            self?.openSettings()
+            self?.showSettings()
         }
         let settingsMenu = UIMenu(title: "", options: .displayInline, children: [settingsAction])
         builder.insertChild(settingsMenu, atStartOfMenu: .application)
     }
 
     @objc
-    func openSettings() {
-        guard let nav = navigationController else {
-            print("AppDelegate: Нет navigationController для показа настроек")
-            return
-        }
+    func showSettings() {
+        guard let nav = navigationController else { return }
+        // Если уже открыты настройки, не пушим еще раз
+        if nav.topViewController is SettingsViewController { return }
         let settingsVC = SettingsViewController()
         nav.pushViewController(settingsVC, animated: true)
     }
 
-    func openChatSelectionFromMenu(resetToRoot: Bool = true) {
-        guard let client else { return }
+    func showHome() {
         guard let nav = navigationController else { return }
-        let selectionVC = makeChatSelectionController(viewModel: chatListViewModel ?? ChatListViewModel(client: client))
-        if resetToRoot {
-            nav.popToRootViewController(animated: false)
+        // Если Home уже в стеке, возвращаемся к нему
+        if let homeVC = nav.viewControllers.first(where: { $0 is HomeViewController }) {
+            nav.popToViewController(homeVC, animated: true)
+        } else {
+            nav.setViewControllers([makeHomeController()], animated: true)
         }
-        nav.pushViewController(selectionVC, animated: true)
+    }
+
+    func showChannels() {
+        guard let nav = navigationController, let chatListViewModel = chatListViewModel else { return }
+        // Если Список уже в стеке, возвращаемся к нему
+        if let chatVC = nav.viewControllers.first(where: { $0 is ChatListViewController }) {
+            nav.popToViewController(chatVC, animated: true)
+        } else {
+            nav.setViewControllers([makeChatSelectionController(viewModel: chatListViewModel)], animated: true)
+        }
     }
 
     func logoutFromMenu() {
@@ -1225,9 +1230,6 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         
         Task {
             await authService.logout()
-            await MainActor.run { [weak self] in
-                self?.selectedChatsStore.clear()
-            }
         }
     }
     
@@ -1263,30 +1265,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
     @MainActor
     private func restartAuthFlow() {
-        guard !isRestartingAuthFlow else { return }
-        isRestartingAuthFlow = true
-
         print("AppDelegate: Пересоздаем TDLib клиент и сервисы после выхода")
         cancellables.removeAll()
-        let oldClient = client
-        client = nil
 
-        // Закрываем старый client в фоне (fire-and-forget), без ожидания
-        if let oldClient {
-            Task {
-                try? await oldClient.close()
-            }
-        }
-
-        // Сразу переходим к созданию нового клиента, не ждем закрытия старого
-        finishRestartAuthFlow()
-    }
-
-    @MainActor
-    private func finishRestartAuthFlow() {
-        defer { isRestartingAuthFlow = false }
-
-        print("AppDelegate: finishRestartAuthFlow()")
         setupTDLibClient()
 
         guard let client else {
@@ -1297,10 +1278,8 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         authService = AuthService(client: client)
         chatListViewModel = ChatListViewModel(client: client)
 
-        guard let authService, let chatListViewModel else { return }
-
-        let authVC = AuthQRController(authService: authService)
-        let chatListVC = makeChatSelectionController(viewModel: chatListViewModel)
+        let authVC = AuthQRController(authService: authService!)
+        let chatListVC = makeChatSelectionController(viewModel: chatListViewModel!)
 
         let nav = navigationController ?? UINavigationController()
         nav.isNavigationBarHidden = false
@@ -1308,12 +1287,19 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         window?.rootViewController = nav
         window?.makeKeyAndVisible()
 
-        // После logout всегда показываем QR-экран (isAuthorized сейчас false),
-        // и запускаем auth-flow без троттлинга, чтобы TDLib гарантированно выдал новый QR.
-        nav.setViewControllers([authVC], animated: false)
-        Task { await authService.startAuthFlow(force: true) }
+        Task { @MainActor in
+            if authService?.isAuthorized == true {
+                if selectedChatsStore.hasCompletedSelection {
+                    nav.setViewControllers([makeHomeController()], animated: false)
+                } else {
+                    nav.setViewControllers([chatListVC], animated: false)
+                }
+            } else {
+                nav.setViewControllers([authVC], animated: false)
+            }
+        }
 
-        authService.$isAuthorized
+        authService?.$isAuthorized
             .removeDuplicates()
             .receive(on: DispatchQueue.main)
             .sink { [weak self, weak nav, weak authVC] isAuthorized in
@@ -1321,15 +1307,6 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
                 self.handleAuthStateChange(isAuthorized: isAuthorized, navigationController: nav, authVC: authVC)
             }
             .store(in: &cancellables)
-
-        // На случай, если пользователь был авторизован и быстро вернулся — восстановим корректный стек.
-        if authService.isAuthorized {
-            if selectedChatsStore.hasCompletedSelection {
-                nav.setViewControllers([makeHomeController()], animated: false)
-            } else {
-                nav.setViewControllers([chatListVC], animated: false)
-            }
-        }
     }
 
     private func setInitialStack(nav: UINavigationController, isAuthorized: Bool, authVC: AuthQRController, chatSelectionVC: ChatListViewController) {
@@ -1351,7 +1328,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             let selectionVC = self.makeChatSelectionController(viewModel: self.chatListViewModel ?? ChatListViewModel(client: client))
             nav.pushViewController(selectionVC, animated: true)
         }, openSettings: { [weak self] in
-            self?.openSettings()
+            self?.showSettings()
         })
     }
 
@@ -1360,22 +1337,10 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             viewModel: viewModel,
             selectedChats: Set(selectedChatsStore.load()),
             onSaveSelection: { [weak self] ids in
-                guard let self else { return }
-                guard !ids.isEmpty else {
-                    self.selectedChatsStore.clear()
-                    return
-                }
-                
-                let wasCompleted = self.selectedChatsStore.hasCompletedSelection
+                guard let self, let nav = self.navigationController else { return }
                 self.selectedChatsStore.save(ids: Array(ids))
-                
-                if !wasCompleted {
-                    self.selectedChatsStore.markCompleted()
-                    DispatchQueue.main.async { [weak self] in
-                        guard let self, let nav = self.navigationController else { return }
-                        nav.setViewControllers([self.makeHomeController()], animated: true)
-                    }
-                }
+                self.selectedChatsStore.markCompleted()
+                nav.setViewControllers([self.makeHomeController()], animated: true)
             }
         )
         return vc

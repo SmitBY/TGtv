@@ -24,7 +24,10 @@ final class HomeViewController: UIViewController, AVPlayerViewControllerDelegate
     private var playbackStallObserver: NSObjectProtocol?
     private let playbackProgressLabel = UILabel()
     private var playbackProgressWorkItem: DispatchWorkItem?
-    private var topMenuControl: UISegmentedControl?
+    private var topMenu: TopMenuView?
+    private let headerContainer = UIView()
+    private var headerTopConstraint: NSLayoutConstraint?
+    private var focusGuideCollectionToHeader: UIFocusGuide?
     
     // Полноэкранный оверлей загрузки
     private var fullscreenLoadingView: UIView?
@@ -57,9 +60,18 @@ final class HomeViewController: UIViewController, AVPlayerViewControllerDelegate
         fatalError("init(coder:) has not been implemented")
     }
     
+    override var preferredFocusEnvironments: [UIFocusEnvironment] {
+        if let menu = topMenu, let target = menu.currentFocusTarget() {
+            return [target]
+        }
+        return super.preferredFocusEnvironments
+    }
+
     override func viewDidLoad() {
         super.viewDidLoad()
+        restoresFocusAfterTransition = false
         setupBackground()
+        setupHeaderContainer()
         setupTopMenuBar()
         setupNavigation()
         setupCollectionView()
@@ -74,6 +86,49 @@ final class HomeViewController: UIViewController, AVPlayerViewControllerDelegate
             self?.handleReturnFromBackground()
         }
         applySnapshot(sections: [])
+        
+        // КРИТИЧЕСКИ ВАЖНО: хедер должен быть над коллекцией
+        view.bringSubviewToFront(headerContainer)
+    }
+    
+    private func setupHeaderContainer() {
+        headerContainer.translatesAutoresizingMaskIntoConstraints = false
+        headerContainer.backgroundColor = .clear
+        view.addSubview(headerContainer)
+        view.bringSubviewToFront(headerContainer) // Сверху коллекции
+        
+        headerTopConstraint = headerContainer.topAnchor.constraint(equalTo: view.topAnchor)
+        
+        NSLayoutConstraint.activate([
+            headerTopConstraint!,
+            headerContainer.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            headerContainer.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            headerContainer.heightAnchor.constraint(equalToConstant: 250) // Высота для меню и прогресса
+        ])
+    }
+    
+    private func setupHomeFocusGuides() {
+        guard let topMenu else { return }
+        
+        // Удаляем старые гайды если они были, чтобы не плодить их
+        view.layoutGuides.filter { $0 is UIFocusGuide && $0.identifier == "HomeToMenuGuide" }.forEach { view.removeLayoutGuide($0) }
+        
+        // Гайд от коллекции вверх к меню
+        let guide = UIFocusGuide()
+        guide.identifier = "HomeToMenuGuide"
+        guide.preferredFocusEnvironments = [topMenu.currentFocusTarget()].compactMap { $0 }
+        view.addLayoutGuide(guide)
+        
+        NSLayoutConstraint.activate([
+            // КРИТИЧНО: гайд должен быть СТРОГО ВЫШЕ контента (не перекрывать карточки),
+            // иначе на крайних элементах tvOS может не считать его кандидатом по направлению "вверх".
+            // Делаем узкую полосу перед началом контента.
+            guide.topAnchor.constraint(equalTo: headerContainer.bottomAnchor, constant: -60),
+            guide.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            guide.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            guide.heightAnchor.constraint(equalToConstant: 60)
+        ])
+        focusGuideCollectionToHeader = guide
     }
     
     deinit {
@@ -93,7 +148,7 @@ final class HomeViewController: UIViewController, AVPlayerViewControllerDelegate
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         navigationController?.setNavigationBarHidden(true, animated: false)
-        topMenuControl?.selectedSegmentIndex = 0
+        topMenu?.setCurrentIndex(0) // Синхронизируем вкладку
         Task { @MainActor in
             await reloadData()
         }
@@ -102,6 +157,7 @@ final class HomeViewController: UIViewController, AVPlayerViewControllerDelegate
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
         navigationController?.setNavigationBarHidden(false, animated: false)
+        topMenu?.cancelPendingTransitions()
     }
     
     private func setupBackground() {
@@ -145,28 +201,34 @@ final class HomeViewController: UIViewController, AVPlayerViewControllerDelegate
     }
 
     private func setupTopMenuBar() {
-        let control = UISegmentedControl(items: ["Главная", "Список", "Настройки"])
-        control.translatesAutoresizingMaskIntoConstraints = false
-        control.selectedSegmentIndex = 0
-        control.backgroundColor = UIColor(white: 0, alpha: 0.55)
-        control.selectedSegmentTintColor = UIColor.white
-        control.addTarget(self, action: #selector(topMenuChanged(_:)), for: .valueChanged)
-        control.setTitleTextAttributes([
-            .foregroundColor: UIColor.black,
-            .font: UIFont.systemFont(ofSize: 30, weight: .regular)
-        ], for: .normal)
-        control.setTitleTextAttributes([
-            .foregroundColor: UIColor.black,
-            .font: UIFont.systemFont(ofSize: 32, weight: .semibold)
-        ], for: .selected)
-        view.addSubview(control)
+        let menu = TopMenuView(items: ["Главная", "Каналы", "Настройки"], selectedIndex: 0)
+        menu.translatesAutoresizingMaskIntoConstraints = false
+        menu.onTabSelected = { [weak self] index in
+            self?.handleTabSelection(index)
+        }
+        headerContainer.addSubview(menu)
+        
         NSLayoutConstraint.activate([
-            control.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 10),
-            control.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 80),
-            control.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -80),
-            control.heightAnchor.constraint(equalToConstant: 80)
+            menu.topAnchor.constraint(equalTo: headerContainer.topAnchor, constant: 60),
+            menu.leadingAnchor.constraint(equalTo: headerContainer.leadingAnchor),
+            menu.trailingAnchor.constraint(equalTo: headerContainer.trailingAnchor),
+            menu.heightAnchor.constraint(equalToConstant: 74)
         ])
-        topMenuControl = control
+        topMenu = menu
+        setupHomeFocusGuides() // Обновляем гайды после создания меню
+    }
+    
+    private func handleTabSelection(_ index: Int) {
+        let appDelegate = UIApplication.shared.delegate as? AppDelegate
+        
+        switch index {
+        case 1:
+            appDelegate?.showChannels()
+        case 2:
+            appDelegate?.showSettings()
+        default:
+            break
+        }
     }
     
     private func setupCollectionView() {
@@ -174,17 +236,23 @@ final class HomeViewController: UIViewController, AVPlayerViewControllerDelegate
         collectionView = UICollectionView(frame: .zero, collectionViewLayout: layout)
         collectionView.translatesAutoresizingMaskIntoConstraints = false
         collectionView.backgroundColor = .clear
+        // ВАЖНО: иначе tvOS добавляет safe-area в inset, и headerTopConstraint смещает хедер вниз
+        // (из-за чего меню на Home оказывается ниже, чем на других экранах).
+        collectionView.contentInsetAdjustmentBehavior = .never
+        collectionView.insetsLayoutMarginsFromSafeArea = false
         collectionView.remembersLastFocusedIndexPath = true
         collectionView.delegate = self
         view.addSubview(collectionView)
         
-        let topAnchor = (topMenuControl?.bottomAnchor).map { $0 } ?? view.safeAreaLayoutGuide.topAnchor
         NSLayoutConstraint.activate([
-            collectionView.topAnchor.constraint(equalTo: topAnchor, constant: 20),
+            collectionView.topAnchor.constraint(equalTo: view.topAnchor), // Занимаем весь экран, чтобы прокрутка была видна под меню
             collectionView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 40),
             collectionView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -40),
             collectionView.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -40)
         ])
+        
+        // Добавляем отступ сверху коллекции, чтобы контент не перекрывался меню изначально
+        collectionView.contentInset = UIEdgeInsets(top: 250, left: 0, bottom: 0, right: 0)
         
         collectionView.register(VideoCell.self, forCellWithReuseIdentifier: "VideoCell")
         collectionView.register(ChatHeaderView.self, forSupplementaryViewOfKind: UICollectionView.elementKindSectionHeader, withReuseIdentifier: "Header")
@@ -233,11 +301,10 @@ final class HomeViewController: UIViewController, AVPlayerViewControllerDelegate
         playbackProgressLabel.textAlignment = .center
         playbackProgressLabel.alpha = 0
         playbackProgressLabel.numberOfLines = 1
-        view.addSubview(playbackProgressLabel)
-        let topAnchor = (topMenuControl?.bottomAnchor).map { $0 } ?? view.safeAreaLayoutGuide.topAnchor
+        headerContainer.addSubview(playbackProgressLabel)
         NSLayoutConstraint.activate([
-            playbackProgressLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            playbackProgressLabel.topAnchor.constraint(equalTo: topAnchor, constant: 20)
+            playbackProgressLabel.centerXAnchor.constraint(equalTo: headerContainer.centerXAnchor),
+            playbackProgressLabel.topAnchor.constraint(equalTo: topMenu?.bottomAnchor ?? headerContainer.topAnchor, constant: 20)
         ])
     }
     
@@ -312,6 +379,37 @@ final class HomeViewController: UIViewController, AVPlayerViewControllerDelegate
     
     private func setLoading(_ loading: Bool) { }
     
+    override func shouldUpdateFocus(in context: UIFocusUpdateContext) -> Bool {
+        let heading = context.focusHeading
+        let nextView = context.nextFocusedView
+        
+        // Если фокус в хедере
+        if let prev = context.previouslyFocusedView, prev.isDescendant(of: headerContainer) {
+            // Блокируем несанкционированный выход вбок или вверх
+            if heading.contains(.left) || heading.contains(.right) || heading.contains(.up) {
+                if let next = nextView, !next.isDescendant(of: headerContainer) {
+                    return false
+                }
+            }
+        }
+        
+        return true
+    }
+
+    override func didUpdateFocus(in context: UIFocusUpdateContext, with coordinator: UIFocusAnimationCoordinator) {
+        super.didUpdateFocus(in: context, with: coordinator)
+        
+        let next = context.nextFocusedView
+        
+        // Управление гайдом: если фокус в хедере - гайд помогает выйти вниз,
+        // если фокус в коллекции - гайд помогает зайти вверх.
+        if let next = next, next.isDescendant(of: headerContainer) {
+            focusGuideCollectionToHeader?.preferredFocusEnvironments = [collectionView]
+        } else {
+            focusGuideCollectionToHeader?.preferredFocusEnvironments = [topMenu?.currentFocusTarget()].compactMap { $0 }
+        }
+    }
+    
     @objc private func cancelLoadingOverlay() {
         progressWatchTask?.cancel()
         progressWatchTask = nil
@@ -380,15 +478,11 @@ final class HomeViewController: UIViewController, AVPlayerViewControllerDelegate
         openSettingsAction()
     }
 
-    @objc private func topMenuChanged(_ sender: UISegmentedControl) {
-        switch sender.selectedSegmentIndex {
-        case 1:
-            openSelection()
-        case 2:
-            openSettingsAction()
-        default:
-            break
-        }
+    func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        let offset = scrollView.contentOffset.y
+        headerTopConstraint?.constant = -(offset + scrollView.contentInset.top)
+        
+        // Показываем/скрываем хедер если нужно, но здесь он просто уходит вверх
     }
 }
 
