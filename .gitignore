@@ -50,6 +50,4 @@ iOSInjectionProject/
 *.bak 
 
 # Rules
-rules/
-.cursor/rules/ 
-.cursor/debug.log
+.cursor/
