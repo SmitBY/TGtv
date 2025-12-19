@@ -299,7 +299,9 @@ final class ChatListViewController: UICollectionViewController {
         dataSource = UICollectionViewDiffableDataSource<Section, TG.Chat>(collectionView: collectionView) { [weak self] collectionView, indexPath, chat in
             let cell = collectionView.dequeueReusableCell(withReuseIdentifier: "ChatCell", for: indexPath) as! ChatCell
             let isSelected = self?.selectedChatIds.contains(chat.id) ?? false
-            cell.configure(with: chat, selected: isSelected)
+            let avatar = self?.viewModel.avatarImage(for: chat.id)
+            cell.configure(with: chat, selected: isSelected, avatarImage: avatar)
+            self?.viewModel.requestAvatarIfNeeded(chatId: chat.id)
             return cell
         }
         
@@ -319,6 +321,13 @@ final class ChatListViewController: UICollectionViewController {
                 snapshot.appendItems(chats, toSection: .main)
                 self.dataSource.apply(snapshot, animatingDifferences: true)
                 self.updateEmptyState(for: chats)
+            }
+            .store(in: &cancellables)
+        
+        viewModel.avatarDidUpdate
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] chatId in
+                self?.refreshSelectionMarks(for: [chatId])
             }
             .store(in: &cancellables)
         
@@ -592,6 +601,7 @@ final class ChatCell: UICollectionViewCell {
     private let containerView = UIView()
     private let titleLabel = UILabel()
     private let avatarView = UIView()
+    private let avatarImageView = UIImageView()
     private let avatarLabel = UILabel()
 
     private func applyFocusAppearance(_ focused: Bool) {
@@ -634,6 +644,12 @@ final class ChatCell: UICollectionViewCell {
         avatarView.clipsToBounds = true
         containerView.addSubview(avatarView)
         
+        avatarImageView.translatesAutoresizingMaskIntoConstraints = false
+        avatarImageView.contentMode = .scaleAspectFill
+        avatarImageView.clipsToBounds = true
+        avatarImageView.isHidden = true
+        avatarView.addSubview(avatarImageView)
+        
         avatarLabel.translatesAutoresizingMaskIntoConstraints = false
         avatarLabel.textColor = .white
         avatarLabel.font = .systemFont(ofSize: 48, weight: .semibold)
@@ -659,6 +675,11 @@ final class ChatCell: UICollectionViewCell {
             avatarView.topAnchor.constraint(equalTo: containerView.topAnchor),
             avatarView.heightAnchor.constraint(equalToConstant: 231),
             
+            avatarImageView.leadingAnchor.constraint(equalTo: avatarView.leadingAnchor),
+            avatarImageView.trailingAnchor.constraint(equalTo: avatarView.trailingAnchor),
+            avatarImageView.topAnchor.constraint(equalTo: avatarView.topAnchor),
+            avatarImageView.bottomAnchor.constraint(equalTo: avatarView.bottomAnchor),
+            
             avatarLabel.centerXAnchor.constraint(equalTo: avatarView.centerXAnchor),
             avatarLabel.centerYAnchor.constraint(equalTo: avatarView.centerYAnchor),
             
@@ -673,14 +694,26 @@ final class ChatCell: UICollectionViewCell {
         super.layoutSubviews()
     }
     
-    func configure(with chat: TG.Chat, selected: Bool) {
+    func configure(with chat: TG.Chat, selected: Bool, avatarImage: UIImage?) {
         titleLabel.text = chat.title
         
         let initials = chat.title.prefix(2).uppercased()
         avatarLabel.text = String(initials)
         
         let hue = CGFloat(abs(chat.id.hashValue) % 360) / 360.0
-        avatarView.backgroundColor = UIColor(hue: hue, saturation: 0.5, brightness: 0.7, alpha: 1)
+        let fallbackColor = UIColor(hue: hue, saturation: 0.5, brightness: 0.7, alpha: 1)
+        
+        if let avatarImage {
+            avatarImageView.image = avatarImage
+            avatarImageView.isHidden = false
+            avatarLabel.isHidden = true
+            avatarView.backgroundColor = .clear
+        } else {
+            avatarImageView.image = nil
+            avatarImageView.isHidden = true
+            avatarLabel.isHidden = false
+            avatarView.backgroundColor = fallbackColor
+        }
         
         updateSelection(selected)
         applyFocusAppearance(isFocused)
@@ -698,6 +731,9 @@ final class ChatCell: UICollectionViewCell {
         super.prepareForReuse()
         titleLabel.text = nil
         avatarLabel.text = nil
+        avatarLabel.isHidden = false
+        avatarImageView.image = nil
+        avatarImageView.isHidden = true
 
         if let mark = containerView.viewWithTag(999) as? UIImageView {
             mark.isHidden = true

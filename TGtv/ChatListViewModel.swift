@@ -1,6 +1,7 @@
 import Foundation
 import TDLibKit
 import Combine
+import UIKit
 
 final class ChatListViewModel: ObservableObject {
     let client: TDLibClient
@@ -11,6 +12,19 @@ final class ChatListViewModel: ObservableObject {
     private let cacheQueue = DispatchQueue(label: "com.tgtv.chatList.cache", qos: .utility)
     private let cacheFileURL: URL
     private var isChatsUpdateScheduled = false
+    
+    // MARK: - Avatars
+    
+    private let avatarCache = NSCache<NSNumber, UIImage>()
+    private var avatarTasks: [Int64: Task<Void, Never>] = [:]
+    private var avatarFileIdByChatId: [Int64: Int] = [:]
+    private var avatarLastRequestAt: [Int64: TimeInterval] = [:]
+    private let avatarRequestMinInterval: TimeInterval = 10
+    private let avatarDidUpdateSubject = PassthroughSubject<Int64, Never>()
+    
+    var avatarDidUpdate: AnyPublisher<Int64, Never> {
+        avatarDidUpdateSubject.eraseToAnyPublisher()
+    }
     
     @Published private(set) var chats: [TG.Chat] = []
     @Published private(set) var filteredChats: [TG.Chat] = []
@@ -92,6 +106,7 @@ final class ChatListViewModel: ObservableObject {
                 let updatedChat = cachedChats[index]
                 let newChat = updatedChat.updating(photo: update.photo)
                 upsertChat(newChat)
+                invalidateAvatarCache(chatId: update.chatId)
                 scheduleChatsUpdate()
             }
         case .updateChatTitle(let update):
@@ -478,6 +493,106 @@ final class ChatListViewModel: ObservableObject {
             }
         }
         return result
+    }
+    
+    // MARK: - Avatar API
+    
+    func avatarImage(for chatId: Int64) -> UIImage? {
+        avatarCache.object(forKey: NSNumber(value: chatId))
+    }
+    
+    @MainActor
+    func requestAvatarIfNeeded(chatId: Int64) {
+        if avatarCache.object(forKey: NSNumber(value: chatId)) != nil { return }
+        if avatarTasks[chatId] != nil { return }
+        
+        let now = Date().timeIntervalSince1970
+        if let last = avatarLastRequestAt[chatId], now - last < avatarRequestMinInterval {
+            return
+        }
+        avatarLastRequestAt[chatId] = now
+        
+        let task = Task.detached(priority: .utility) { [weak self] in
+            guard let self else { return }
+            defer {
+                Task { @MainActor in
+                    self.avatarTasks[chatId] = nil
+                }
+            }
+            
+            guard !Task.isCancelled else { return }
+            guard let file = await self.resolveAvatarSmallFile(chatId: chatId) else { return }
+            
+            let fileId = file.id
+            await MainActor.run {
+                self.avatarFileIdByChatId[chatId] = fileId
+            }
+            
+            guard let path = await self.ensureDownloadedAvatarPath(file: file) else { return }
+            guard !path.isEmpty, FileManager.default.fileExists(atPath: path) else { return }
+            guard !Task.isCancelled else { return }
+            
+            guard let image = UIImage(contentsOfFile: path) else { return }
+            guard !Task.isCancelled else { return }
+            
+            let shouldStore = await MainActor.run { self.avatarFileIdByChatId[chatId] == fileId }
+            guard shouldStore else { return }
+            
+            await MainActor.run {
+                self.avatarCache.setObject(image, forKey: NSNumber(value: chatId))
+                self.avatarDidUpdateSubject.send(chatId)
+            }
+        }
+        
+        avatarTasks[chatId] = task
+    }
+    
+    @MainActor
+    private func invalidateAvatarCache(chatId: Int64) {
+        avatarTasks[chatId]?.cancel()
+        avatarTasks[chatId] = nil
+        avatarFileIdByChatId[chatId] = nil
+        avatarCache.removeObject(forKey: NSNumber(value: chatId))
+        avatarDidUpdateSubject.send(chatId)
+    }
+    
+    private func resolveAvatarSmallFile(chatId: Int64) async -> File? {
+        if let file = await MainActor.run(resultType: File?.self, body: {
+            self.cachedChats.first(where: { $0.id == chatId })?.photo?.small
+        }) {
+            return file
+        }
+        
+        do {
+            let chat = try await client.getChat(chatId: chatId)
+            return chat.photo?.small
+        } catch {
+            return nil
+        }
+    }
+    
+    private func ensureDownloadedAvatarPath(file: File) async -> String? {
+        let existingPath = file.local.path
+        if !existingPath.isEmpty, FileManager.default.fileExists(atPath: existingPath) {
+            return existingPath
+        }
+        
+        guard file.local.canBeDownloaded else { return nil }
+        
+        do {
+            let downloaded = try await client.downloadFile(
+                fileId: file.id,
+                limit: 0,
+                offset: 0,
+                priority: 8,
+                synchronous: true
+            )
+            let path = downloaded.local.path
+            guard !path.isEmpty, FileManager.default.fileExists(atPath: path) else { return nil }
+            return path
+        } catch {
+            return nil
+        }
     }
     
 }
