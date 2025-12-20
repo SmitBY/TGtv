@@ -51,3 +51,6 @@ iOSInjectionProject/
 
 # Rules
 .cursor/
+
+# Secrets
+TGtv/Config.swift

@@ -501,12 +501,18 @@ final class AuthQRController: UIViewController {
                 self.loadingIndicator.isHidden = true
                 self.qrContainerView.isHidden = false
                 self.passwordView.isHidden = true
-                // Текст инструкции теперь внутри qrContainerView
                 self.statusLabel.text = nil
                 self.statusLabel.isHidden = true
                 
-                if let qrImage = self.generateQRCode(from: url) {
-                    self.qrImageView.image = qrImage
+                // Генерация QR-кода в фоновом потоке
+                Task {
+                    if let qrImage = await Task.detached(priority: .userInitiated, operation: {
+                        self.generateQRCode(from: url)
+                    }).value {
+                        await MainActor.run {
+                            self.qrImageView.image = qrImage
+                        }
+                    }
                 }
             }
             .store(in: &cancellables)
@@ -571,8 +577,20 @@ final class AuthQRController: UIViewController {
             }
             .store(in: &cancellables)
             
-        DebugLogger.shared.$logs
+        authService.$authError
             .receive(on: DispatchQueue.main)
+            .sink { [weak self] error in
+                guard let self, let error = error else { return }
+                self.statusLabel.text = error
+                self.statusLabel.textColor = .systemRed
+                self.statusLabel.isHidden = false
+                self.loadingIndicator.stopAnimating()
+                self.loadingIndicator.isHidden = true
+            }
+            .store(in: &cancellables)
+
+        DebugLogger.shared.$logs
+            .throttle(for: .milliseconds(500), scheduler: DispatchQueue.main, latest: true)
             .sink { [weak self] logs in
                 self?.debugLogView.text = logs
                 if !logs.isEmpty {
@@ -626,7 +644,7 @@ final class AuthQRController: UIViewController {
         view.endEditing(true)
     }
     
-    private func generateQRCode(from string: String) -> UIImage? {
+    nonisolated private func generateQRCode(from string: String) -> UIImage? {
         let data = string.data(using: .ascii)
         guard let filter = CIFilter(name: "CIQRCodeGenerator") else { return nil }
         filter.setValue(data, forKey: "inputMessage")

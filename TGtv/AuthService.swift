@@ -12,6 +12,7 @@ class AuthService {
     private var isSettingParameters = false
     private var isRequestingQR = false
     @Published var isChangingAuthState = false
+    @Published var authError: String?
     private var chatLoadRetryCount = 0
     private var maxChatLoadRetries = 3
     private var isChatLoadingInProgress = false
@@ -105,21 +106,26 @@ class AuthService {
 
         do {
             _ = try? await client.setLogVerbosityLevel(newVerbosityLevel: 1)
-            let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].path
-            let databasePath = (documentsPath as NSString).appendingPathComponent("tdlib")
-            let filesPath = (documentsPath as NSString).appendingPathComponent("tdlib_files")
             
-            if !FileManager.default.fileExists(atPath: databasePath) {
-                try FileManager.default.createDirectory(atPath: databasePath, withIntermediateDirectories: true)
-            }
-            
-            if !FileManager.default.fileExists(atPath: filesPath) {
-                try FileManager.default.createDirectory(atPath: filesPath, withIntermediateDirectories: true)
-            }
+            // Работа с файловой системой в фоновом потоке
+            let (databasePath, filesPath) = try await Task.detached(priority: .utility) {
+                let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].path
+                let dbPath = (documentsPath as NSString).appendingPathComponent("tdlib")
+                let fPath = (documentsPath as NSString).appendingPathComponent("tdlib_files")
+                
+                if !FileManager.default.fileExists(atPath: dbPath) {
+                    try FileManager.default.createDirectory(atPath: dbPath, withIntermediateDirectories: true)
+                }
+                
+                if !FileManager.default.fileExists(atPath: fPath) {
+                    try FileManager.default.createDirectory(atPath: fPath, withIntermediateDirectories: true)
+                }
+                return (dbPath, fPath)
+            }.value
             
             try await client.setTdlibParameters(
-                apiHash: "a3406de8d171bb422bb6ddf3bbd800e2",
-                apiId: 94575,
+                apiHash: Config.apiHash,
+                apiId: Config.apiId,
                 applicationVersion: "1.0",
                 databaseDirectory: databasePath,
                 // TDLib ожидает либо пустой ключ (без шифрования), либо 32 байта.
@@ -146,9 +152,16 @@ class AuthService {
         defer { isRequestingQR = false }
 
         do {
+            authError = nil
             try await client.requestQrCodeAuthentication(otherUserIds: [])
         } catch {
-            DebugLogger.shared.log("AuthService: Ошибка requestQrCodeAuthentication: \(error)")
+            let errorDesc = "\(error)"
+            DebugLogger.shared.log("AuthService: Ошибка requestQrCodeAuthentication: \(errorDesc)")
+            if errorDesc.contains("API_ID_PUBLISHED_FLOOD") {
+                authError = "Критическая ошибка: Используется заблокированный api_id. Пожалуйста, замените apiId и apiHash в коде."
+            } else {
+                authError = "Ошибка запроса QR: \(errorDesc)"
+            }
         }
     }
     

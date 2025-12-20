@@ -1138,24 +1138,28 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     }
     
     private func process(update: TDLibKit.Update) {
-        Task { @MainActor [weak self] in
-            guard let self else { return }
+        // Используем DispatchQueue.main.async для снижения нагрузки от создания тысяч Task
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            
+            // 1. AuthService (критично для логина)
             self.authService?.handleUpdate(update)
             
+            // 2. ChatListViewModel
+            self.chatListViewModel?.handleUpdate(update)
+            
+            // 3. Системные уведомления
             if case let TDLibKit.Update.updateFile(fileUpdate) = update {
                 NotificationCenter.default.post(name: .tgFileUpdated, object: fileUpdate.file)
             }
             
+            // 4. Обработка закрытия (перезапуск)
             if case let TDLibKit.Update.updateAuthorizationState(stateUpdate) = update,
                case .authorizationStateClosed = stateUpdate.authorizationState {
-                DebugLogger.shared.log("AppDelegate: Получено состояние Closed, перезапускаем клиент и UI")
-                // Не допускаем повторный рестарт из серии одинаковых апдейтов.
+                DebugLogger.shared.log("AppDelegate: Получено состояние Closed")
                 guard !self.isRestartingAuthFlow else { return }
                 self.restartAuthFlow()
-                return
             }
-            
-            self.chatListViewModel?.handleUpdate(update)
         }
     }
     
