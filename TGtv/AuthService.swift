@@ -28,10 +28,6 @@ class AuthService {
             isChangingAuthState = true
             handleAuthStateUpdate(state.authorizationState)
             isChangingAuthState = false
-        //case .updateOption:
-            //print("AuthService: Получено обновление опций")
-        //case .updateChatPosition:
-        //    //print("AuthService: Получено обновление позиции чата, игнорируется в AuthService")
         default:
             break
         }
@@ -39,7 +35,7 @@ class AuthService {
     
     private func handleAuthStateUpdate(_ state: AuthorizationState) {
         // Логируем ключевые состояния — это помогает понять, почему TDLib закрывается/не доходит до QR.
-        print("AuthService: authorizationState = \(state)")
+        DebugLogger.shared.log("AuthService: authorizationState = \(state)")
 
         switch state {
         case .authorizationStateWaitTdlibParameters:
@@ -140,7 +136,7 @@ class AuthService {
                 useTestDc: false
             )
         } catch {
-            print("AuthService: Ошибка setupTDLib: \(error)")
+            DebugLogger.shared.log("AuthService: Ошибка setupTDLib: \(error)")
         }
     }
     
@@ -152,7 +148,7 @@ class AuthService {
         do {
             try await client.requestQrCodeAuthentication(otherUserIds: [])
         } catch {
-            print("AuthService: Ошибка requestQrCodeAuthentication: \(error)")
+            DebugLogger.shared.log("AuthService: Ошибка requestQrCodeAuthentication: \(error)")
         }
     }
     
@@ -178,7 +174,7 @@ class AuthService {
             let state = try await client.getAuthorizationState()
             handleAuthStateUpdate(state)
         } catch {
-            print("AuthService: Ошибка getAuthorizationState: \(error)")
+            DebugLogger.shared.log("AuthService: Ошибка getAuthorizationState: \(error)")
         }
         isChangingAuthState = false
     }
@@ -216,13 +212,12 @@ class AuthService {
                 case .authorizationStateReady:
                     return
                 case .authorizationStateClosing, .authorizationStateClosed, .authorizationStateLoggingOut:
-                    // Дадим TDLib время завершить переходы
                     break
                 default:
                     break
                 }
             } catch {
-                print("AuthService: Ошибка startAuthFlow (attempt \(attempt)): \(error)")
+                DebugLogger.shared.log("AuthService: Ошибка startAuthFlow (attempt \(attempt)): \(error)")
             }
 
             try? await Task.sleep(nanoseconds: 300_000_000) // 0.3s
@@ -239,7 +234,7 @@ class AuthService {
             try await client.logOut()
             isAuthorized = false
         } catch {
-            print("AuthService: Ошибка logOut: \(error)")
+            DebugLogger.shared.log("AuthService: Ошибка logOut: \(error)")
         }
         isChangingAuthState = false
     }

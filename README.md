@@ -28,7 +28,3 @@
 - UIKit
 - TDLib (Telegram Database Library)
 - Combine
-
-## Лицензия
-
-MIT 

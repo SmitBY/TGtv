@@ -986,29 +986,28 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     private var authService: AuthService?
     private var chatListViewModel: ChatListViewModel?
     private var cancellables = Set<AnyCancellable>()
-    private var navigationController: UINavigationController?
+    var navigationController: UINavigationController?
     private let selectedChatsStore = SelectedChatsStore()
     // Последовательная очередь для обработки обновлений TDLib, чтобы избежать одновременных вызовов receive
     private let tdUpdateQueue = DispatchQueue(label: "tgtd.updates.queue")
+    // Защита от повторного/реентрантного рестарта при серии updateAuthorizationState(Closed)
+    private var isRestartingAuthFlow = false
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
-        print("AppDelegate: Запуск приложения")
-        
-        window = UIWindow(frame: UIScreen.main.bounds)
-        window?.backgroundColor = .black
+        DebugLogger.shared.log("AppDelegate: Запуск приложения")
         
         // Если клиент уже создан, используем его
         if client == nil {
-            print("AppDelegate: Создание TDLib клиента")
+            DebugLogger.shared.log("AppDelegate: Создание TDLib клиента")
             setupTDLibClient()
         }
         
-        print("AppDelegate: Инициализация сервисов")
+        DebugLogger.shared.log("AppDelegate: Инициализация сервисов")
         if authService == nil {
             if let client = client {
                 authService = AuthService(client: client)
             } else {
-                print("AppDelegate: Ошибка - клиент не инициализирован")
+                DebugLogger.shared.log("AppDelegate: Ошибка - клиент не инициализирован")
                 return false
             }
         }
@@ -1017,12 +1016,12 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             if let client = client {
                 chatListViewModel = ChatListViewModel(client: client)
             } else {
-                print("AppDelegate: Ошибка - клиент не инициализирован")
+                DebugLogger.shared.log("AppDelegate: Ошибка - клиент не инициализирован")
                 return false
             }
         }
         
-        print("AppDelegate: Создание контроллеров")
+        DebugLogger.shared.log("AppDelegate: Создание контроллеров")
         if let authService = authService, let chatListViewModel = chatListViewModel {
             let authVC = AuthQRController(authService: authService)
             let chatListVC = makeChatSelectionController(viewModel: chatListViewModel)
@@ -1045,8 +1044,8 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
                 }
                 .store(in: &cancellables)
             
+            // Если окно уже создано через SceneDelegate, устанавливаем rootViewController
             window?.rootViewController = navigationController
-            window?.makeKeyAndVisible()
             
 #if targetEnvironment(macCatalyst)
             // Перестраиваем системное меню после появления окна
@@ -1065,11 +1064,25 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             return false
         }
         
+        // ЗАПАСНОЙ ВАРИАНТ: Если SceneDelegate не запустился и окно еще не создано
+        if self.window == nil {
+            print("AppDelegate: SceneDelegate не запустился, создаем окно вручную")
+            let window = UIWindow(frame: UIScreen.main.bounds)
+            window.backgroundColor = .black
+            window.rootViewController = self.navigationController
+            self.window = window
+            window.makeKeyAndVisible()
+        }
+        
         return true
     }
 
     private func setupTDLibClient() {
-        clientManager = TDLibClientManager()
+        // ВАЖНО: TDLib требует, чтобы receive() вызывался с одного фиксированного потока.
+        // В TDLibKit менеджер обычно держит receive-loop внутри себя, поэтому менеджер должен быть единственным на процесс.
+        if clientManager == nil {
+            clientManager = TDLibClientManager()
+        }
         client = clientManager?.createClient(updateHandler: { [weak self] (data: Data, client: TDLibClient) in
             // Гарантируем, что обработка обновлений выполняется последовательно на одной очереди
             self?.tdUpdateQueue.async { [weak self] in
@@ -1112,9 +1125,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             )
             
             if safeToPropagateError {
-                print("AppDelegate: Игнорируем безопасную ошибку декодирования: \(error)")
+                DebugLogger.shared.log("AppDelegate: Игнорируем безопасную ошибку декодирования: \(error)")
             } else {
-                print("AppDelegate: Ошибка декодирования обновления: \(error)")
+                DebugLogger.shared.log("AppDelegate: Ошибка декодирования обновления: \(error)")
                 
                 // Для других ошибок проверяем авторизацию
                 Task { @MainActor in
@@ -1135,7 +1148,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             
             if case let TDLibKit.Update.updateAuthorizationState(stateUpdate) = update,
                case .authorizationStateClosed = stateUpdate.authorizationState {
-                print("AppDelegate: Получено состояние Closed, перезапускаем клиент и UI")
+                DebugLogger.shared.log("AppDelegate: Получено состояние Closed, перезапускаем клиент и UI")
+                // Не допускаем повторный рестарт из серии одинаковых апдейтов.
+                guard !self.isRestartingAuthFlow else { return }
                 self.restartAuthFlow()
                 return
             }
@@ -1265,13 +1280,17 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
     @MainActor
     private func restartAuthFlow() {
-        print("AppDelegate: Пересоздаем TDLib клиент и сервисы после выхода")
+        guard !isRestartingAuthFlow else { return }
+        isRestartingAuthFlow = true
+        defer { isRestartingAuthFlow = false }
+
+        DebugLogger.shared.log("AppDelegate: Пересоздаем TDLib клиент и сервисы после выхода")
         cancellables.removeAll()
 
         setupTDLibClient()
 
         guard let client else {
-            print("AppDelegate: Клиент не создан при перезапуске")
+            DebugLogger.shared.log("AppDelegate: Клиент не создан при перезапуске")
             return
         }
 
@@ -1285,8 +1304,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         nav.isNavigationBarHidden = false
         navigationController = nav
         window?.rootViewController = nav
-        window?.makeKeyAndVisible()
-
+        
         Task { @MainActor in
             if authService?.isAuthorized == true {
                 if selectedChatsStore.hasCompletedSelection {
@@ -1307,6 +1325,12 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
                 self.handleAuthStateChange(isAuthorized: isAuthorized, navigationController: nav, authVC: authVC)
             }
             .store(in: &cancellables)
+
+        // После logout/restart TDLib может “молчать” некоторое время; принудительно запускаем auth-flow,
+        // чтобы гарантированно дойти до запроса QR/пароля.
+        Task { [weak self] in
+            await self?.authService?.startAuthFlow(force: true)
+        }
     }
 
     private func setInitialStack(nav: UINavigationController, isAuthorized: Bool, authVC: AuthQRController, chatSelectionVC: ChatListViewController) {
@@ -1346,7 +1370,16 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         return vc
     }
 
-    // ... existing code ...
+    // MARK: UISceneSession Lifecycle
+
+    func application(_ application: UIApplication, configurationForConnecting connectingSceneSession: UISceneSession, options: UIScene.ConnectionOptions) -> UISceneConfiguration {
+        let config = UISceneConfiguration(name: nil, sessionRole: connectingSceneSession.role)
+        config.delegateClass = SceneDelegate.self
+        return config
+    }
+
+    func application(_ application: UIApplication, didDiscardSceneSessions sceneSessions: Set<UISceneSession>) {
+    }
 }
 
 // Добавляем недостающие типы

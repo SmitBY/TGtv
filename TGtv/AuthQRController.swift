@@ -19,6 +19,8 @@ final class AuthQRController: UIViewController {
     private var loginButton: UIButton!
     private var passwordView: UIView!
     private var backgroundImageView: UIImageView!
+    private var debugLogView: UITextView!
+    private var debugLogContainer: UIView!
     private var cancellables = Set<AnyCancellable>()
 
     // MARK: - Scaled layout (base: 1920x1080)
@@ -84,6 +86,11 @@ final class AuthQRController: UIViewController {
     private var qrTopConstraint: NSLayoutConstraint?
     private var qrWConstraint: NSLayoutConstraint?
     private var qrHConstraint: NSLayoutConstraint?
+    
+    private var debugLogTopConstraint: NSLayoutConstraint?
+    private var debugLogBottomConstraint: NSLayoutConstraint?
+    private var debugLogTrailingConstraint: NSLayoutConstraint?
+    private var debugLogWidthConstraint: NSLayoutConstraint?
     
     // tvOS safe area (Apple HIG)
     private let tvSafeInsets = UIEdgeInsets(top: 60, left: 80, bottom: 60, right: 80)
@@ -386,6 +393,38 @@ final class AuthQRController: UIViewController {
         let tapGesture = UITapGestureRecognizer(target: self, action: #selector(dismissKeyboard))
         view.addGestureRecognizer(tapGesture)
 
+        // Debug Log View
+        debugLogContainer = UIView()
+        debugLogContainer.translatesAutoresizingMaskIntoConstraints = false
+        debugLogContainer.backgroundColor = UIColor(white: 0, alpha: 0.6)
+        debugLogContainer.layer.cornerRadius = 12
+        debugLogContainer.clipsToBounds = true
+        view.addSubview(debugLogContainer)
+
+        debugLogView = UITextView()
+        debugLogView.translatesAutoresizingMaskIntoConstraints = false
+        debugLogView.backgroundColor = .clear
+        debugLogView.textColor = .green
+        debugLogView.font = .monospacedSystemFont(ofSize: 14, weight: .regular)
+        debugLogContainer.addSubview(debugLogView)
+
+        debugLogTopConstraint = debugLogContainer.topAnchor.constraint(equalTo: view.topAnchor, constant: 60)
+        debugLogBottomConstraint = debugLogContainer.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -60)
+        debugLogTrailingConstraint = debugLogContainer.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -60)
+        debugLogWidthConstraint = debugLogContainer.widthAnchor.constraint(equalTo: view.widthAnchor, multiplier: 0.35)
+
+        NSLayoutConstraint.activate([
+            debugLogTopConstraint!,
+            debugLogBottomConstraint!,
+            debugLogTrailingConstraint!,
+            debugLogWidthConstraint!,
+
+            debugLogView.topAnchor.constraint(equalTo: debugLogContainer.topAnchor, constant: 10),
+            debugLogView.bottomAnchor.constraint(equalTo: debugLogContainer.bottomAnchor, constant: -10),
+            debugLogView.leadingAnchor.constraint(equalTo: debugLogContainer.leadingAnchor, constant: 10),
+            debugLogView.trailingAnchor.constraint(equalTo: debugLogContainer.trailingAnchor, constant: -10)
+        ])
+
         // Первичная настройка масштабирования (после создания constraints)
         updateScaledLayout()
     }
@@ -436,6 +475,11 @@ final class AuthQRController: UIViewController {
         qrTopConstraint?.constant = LayoutBase.qrTop * scale
         qrWConstraint?.constant = LayoutBase.qrSize * scale
         qrHConstraint?.constant = LayoutBase.qrSize * scale
+
+        debugLogTopConstraint?.constant = 60 * scale
+        debugLogBottomConstraint?.constant = -60 * scale
+        debugLogTrailingConstraint?.constant = -60 * scale
+        debugLogView.font = .monospacedSystemFont(ofSize: 14 * scale, weight: .regular)
 
         // Масштабируем шрифты тоже пропорционально
         qrHeaderLabel.font = .systemFont(ofSize: 31 * scale, weight: .bold)
@@ -526,18 +570,30 @@ final class AuthQRController: UIViewController {
                 }
             }
             .store(in: &cancellables)
+            
+        DebugLogger.shared.$logs
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] logs in
+                self?.debugLogView.text = logs
+                if !logs.isEmpty {
+                    let range = NSMakeRange(logs.count - 1, 1)
+                    self?.debugLogView.scrollRangeToVisible(range)
+                }
+            }
+            .store(in: &cancellables)
     }
-    
     @objc private func loginButtonTapped() {
         guard let password = passwordTextField.text, !password.isEmpty else {
             statusLabel.text = "Введите пароль"
             statusLabel.textColor = UIColor(red: 1, green: 0.4, blue: 0.4, alpha: 1)
+            DebugLogger.shared.log("AuthQRController: Попытка входа с пустым паролем")
             return
         }
         sendPassword(password)
     }
     
     private func sendPassword(_ password: String) {
+        DebugLogger.shared.log("AuthQRController: Отправка пароля")
         loginButton.isEnabled = false
         loginButton.setTitle("Вход...", for: .disabled)
         loginButton.alpha = 0.6
@@ -549,6 +605,7 @@ final class AuthQRController: UIViewController {
             let success = await authService.checkPassword(password)
             
             if !success {
+                DebugLogger.shared.log("AuthQRController: Неверный пароль")
                 statusLabel.text = "Неверный пароль"
                 statusLabel.textColor = UIColor(red: 1, green: 0.4, blue: 0.4, alpha: 1)
                 loginButton.isEnabled = true
@@ -559,6 +616,8 @@ final class AuthQRController: UIViewController {
                 loadingIndicator.stopAnimating()
                 loadingIndicator.isHidden = true
                 passwordTextField.becomeFirstResponder()
+            } else {
+                DebugLogger.shared.log("AuthQRController: Пароль принят")
             }
         }
     }
