@@ -21,6 +21,7 @@ final class AuthQRController: UIViewController {
     private var backgroundImageView: UIImageView!
     private var debugLogView: UITextView!
     private var debugLogContainer: UIView!
+    private var versionLabel: UILabel!
     private var cancellables = Set<AnyCancellable>()
 
     // MARK: - Scaled layout (base: 1920x1080)
@@ -423,6 +424,19 @@ final class AuthQRController: UIViewController {
             debugLogView.bottomAnchor.constraint(equalTo: debugLogContainer.bottomAnchor, constant: -10),
             debugLogView.leadingAnchor.constraint(equalTo: debugLogContainer.leadingAnchor, constant: 10),
             debugLogView.trailingAnchor.constraint(equalTo: debugLogContainer.trailingAnchor, constant: -10)
+        ])
+
+        // Version Label
+        versionLabel = UILabel()
+        versionLabel.translatesAutoresizingMaskIntoConstraints = false
+        versionLabel.text = "1.0.0"
+        versionLabel.textColor = UIColor.white.withAlphaComponent(0.3)
+        versionLabel.font = .systemFont(ofSize: 20, weight: .regular)
+        view.addSubview(versionLabel)
+        
+        NSLayoutConstraint.activate([
+            versionLabel.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -40),
+            versionLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -60)
         ])
 
         // Первичная настройка масштабирования (после создания constraints)

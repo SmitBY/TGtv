@@ -95,7 +95,7 @@ final class HomeViewController: UIViewController, AVPlayerViewControllerDelegate
         headerContainer.translatesAutoresizingMaskIntoConstraints = false
         headerContainer.backgroundColor = .clear
         view.addSubview(headerContainer)
-        view.bringSubviewToFront(headerContainer) // Сверху коллекции
+        view.bringSubviewToFront(headerContainer)
         
         headerTopConstraint = headerContainer.topAnchor.constraint(equalTo: view.topAnchor)
         
@@ -103,7 +103,23 @@ final class HomeViewController: UIViewController, AVPlayerViewControllerDelegate
             headerTopConstraint!,
             headerContainer.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             headerContainer.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            headerContainer.heightAnchor.constraint(equalToConstant: 250) // Высота для меню и прогресса
+            headerContainer.heightAnchor.constraint(equalToConstant: 250)
+        ])
+
+        // Logo as per CSS
+        let logoImageView = UIImageView()
+        logoImageView.translatesAutoresizingMaskIntoConstraints = false
+        logoImageView.contentMode = .scaleAspectFit
+        if let logo = UIImage(named: "Logo") {
+            logoImageView.image = logo
+        }
+        headerContainer.addSubview(logoImageView)
+
+        NSLayoutConstraint.activate([
+            logoImageView.leadingAnchor.constraint(equalTo: headerContainer.leadingAnchor, constant: 64),
+            logoImageView.topAnchor.constraint(equalTo: headerContainer.topAnchor, constant: 59),
+            logoImageView.widthAnchor.constraint(equalToConstant: 175),
+            logoImageView.heightAnchor.constraint(equalToConstant: 66)
         ])
     }
     
@@ -182,7 +198,6 @@ final class HomeViewController: UIViewController, AVPlayerViewControllerDelegate
         
         let overlay = UIView()
         overlay.translatesAutoresizingMaskIntoConstraints = false
-        // Убираем затемнение фоновой картинки
         overlay.backgroundColor = .clear
         overlay.isUserInteractionEnabled = false
         view.addSubview(overlay)
@@ -309,19 +324,20 @@ final class HomeViewController: UIViewController, AVPlayerViewControllerDelegate
     }
     
     private func createLayout() -> UICollectionViewLayout {
-        let itemSize = NSCollectionLayoutSize(widthDimension: .absolute(280), heightDimension: .absolute(240))
+        // Updated sizes to match CSS: 320x173 thumbnail + text area
+        let itemSize = NSCollectionLayoutSize(widthDimension: .absolute(320), heightDimension: .absolute(280))
         let item = NSCollectionLayoutItem(layoutSize: itemSize)
-        item.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 8)
+        item.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 10, bottom: 0, trailing: 10)
         
-        let groupSize = NSCollectionLayoutSize(widthDimension: .estimated(1120), heightDimension: .absolute(240))
+        let groupSize = NSCollectionLayoutSize(widthDimension: .estimated(1600), heightDimension: .absolute(280))
         let group = NSCollectionLayoutGroup.horizontal(layoutSize: groupSize, subitems: [item])
         
         let section = NSCollectionLayoutSection(group: group)
         section.orthogonalScrollingBehavior = .continuous
-        section.interGroupSpacing = 12
-        section.contentInsets = NSDirectionalEdgeInsets(top: 12, leading: 0, bottom: 36, trailing: 0)
+        section.interGroupSpacing = 20
+        section.contentInsets = NSDirectionalEdgeInsets(top: 20, leading: 0, bottom: 40, trailing: 0)
         
-        let headerSize = NSCollectionLayoutSize(widthDimension: .fractionalWidth(1.0), heightDimension: .absolute(40))
+        let headerSize = NSCollectionLayoutSize(widthDimension: .fractionalWidth(1.0), heightDimension: .absolute(60))
         let header = NSCollectionLayoutBoundarySupplementaryItem(layoutSize: headerSize, elementKind: UICollectionView.elementKindSectionHeader, alignment: .top)
         section.boundarySupplementaryItems = [header]
         
@@ -493,6 +509,7 @@ final class VideoCell: UICollectionViewCell {
     private let backgroundCard = UIView()
     private let thumbnailView = UIImageView()
     private let placeholderLabel = UILabel()
+    private let innerStrokeView = UIView() // Added for inner stroke
     
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -507,12 +524,13 @@ final class VideoCell: UICollectionViewCell {
         super.didUpdateFocus(in: context, with: coordinator)
         coordinator.addCoordinatedAnimations {
             if self.isFocused {
-                self.backgroundCard.layer.borderWidth = 2
-                self.backgroundCard.layer.borderColor = UIColor.systemBlue.cgColor
-                self.backgroundCard.transform = CGAffineTransform(scaleX: 1.05, y: 1.05)
+                self.backgroundCard.transform = CGAffineTransform(scaleX: 1.1, y: 1.1)
+                self.innerStrokeView.layer.borderColor = UIColor.white.withAlphaComponent(0.5).cgColor
+                self.innerStrokeView.layer.borderWidth = 2
             } else {
-                self.backgroundCard.layer.borderWidth = 0
                 self.backgroundCard.transform = .identity
+                self.innerStrokeView.layer.borderColor = UIColor.white.withAlphaComponent(0.16).cgColor
+                self.innerStrokeView.layer.borderWidth = 0.5
             }
         }
     }
@@ -533,7 +551,6 @@ final class VideoCell: UICollectionViewCell {
         }
         
         placeholderLabel.isHidden = false
-    
     }
     
     override func prepareForReuse() {
@@ -544,8 +561,15 @@ final class VideoCell: UICollectionViewCell {
     
     private func setupUI() {
         backgroundCard.translatesAutoresizingMaskIntoConstraints = false
-        backgroundCard.layer.cornerRadius = 14
-        backgroundCard.backgroundColor = UIColor(white: 1, alpha: 0.08)
+        backgroundCard.layer.cornerRadius = 12
+        backgroundCard.backgroundColor = UIColor(red: 42/255, green: 42/255, blue: 42/255, alpha: 1.0) // #2A2A2A
+        
+        // Shadow as per CSS
+        backgroundCard.layer.shadowColor = UIColor.black.cgColor
+        backgroundCard.layer.shadowOpacity = 0.4
+        backgroundCard.layer.shadowOffset = CGSize(width: 0, height: 4)
+        backgroundCard.layer.shadowRadius = 12
+        
         contentView.addSubview(backgroundCard)
         
         thumbnailView.translatesAutoresizingMaskIntoConstraints = false
@@ -553,6 +577,13 @@ final class VideoCell: UICollectionViewCell {
         thumbnailView.clipsToBounds = true
         thumbnailView.layer.cornerRadius = 12
         backgroundCard.addSubview(thumbnailView)
+        
+        innerStrokeView.translatesAutoresizingMaskIntoConstraints = false
+        innerStrokeView.layer.cornerRadius = 12
+        innerStrokeView.layer.borderWidth = 0.5
+        innerStrokeView.layer.borderColor = UIColor.white.withAlphaComponent(0.16).cgColor
+        innerStrokeView.isUserInteractionEnabled = false
+        backgroundCard.addSubview(innerStrokeView)
         
         placeholderLabel.translatesAutoresizingMaskIntoConstraints = false
         placeholderLabel.text = "Нет превью"
@@ -564,28 +595,32 @@ final class VideoCell: UICollectionViewCell {
         
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
         titleLabel.textColor = .white
-        titleLabel.font = .systemFont(ofSize: 20, weight: .semibold)
+        titleLabel.font = .systemFont(ofSize: 25, weight: .semibold) // SF Pro 25px
         titleLabel.numberOfLines = 2
-        backgroundCard.addSubview(titleLabel)
+        contentView.addSubview(titleLabel)
         
         NSLayoutConstraint.activate([
             backgroundCard.topAnchor.constraint(equalTo: contentView.topAnchor),
-            backgroundCard.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
             backgroundCard.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
             backgroundCard.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            backgroundCard.heightAnchor.constraint(equalToConstant: 173), // 173px height as per CSS
             
-            thumbnailView.topAnchor.constraint(equalTo: backgroundCard.topAnchor, constant: 8),
-            thumbnailView.leadingAnchor.constraint(equalTo: backgroundCard.leadingAnchor, constant: 8),
-            thumbnailView.trailingAnchor.constraint(equalTo: backgroundCard.trailingAnchor, constant: -8),
-            thumbnailView.heightAnchor.constraint(equalTo: backgroundCard.heightAnchor, multiplier: 0.7),
+            thumbnailView.topAnchor.constraint(equalTo: backgroundCard.topAnchor),
+            thumbnailView.leadingAnchor.constraint(equalTo: backgroundCard.leadingAnchor),
+            thumbnailView.trailingAnchor.constraint(equalTo: backgroundCard.trailingAnchor),
+            thumbnailView.bottomAnchor.constraint(equalTo: backgroundCard.bottomAnchor),
+
+            innerStrokeView.topAnchor.constraint(equalTo: backgroundCard.topAnchor),
+            innerStrokeView.leadingAnchor.constraint(equalTo: backgroundCard.leadingAnchor),
+            innerStrokeView.trailingAnchor.constraint(equalTo: backgroundCard.trailingAnchor),
+            innerStrokeView.bottomAnchor.constraint(equalTo: backgroundCard.bottomAnchor),
             
             placeholderLabel.centerXAnchor.constraint(equalTo: thumbnailView.centerXAnchor),
             placeholderLabel.centerYAnchor.constraint(equalTo: thumbnailView.centerYAnchor),
             
-            titleLabel.leadingAnchor.constraint(equalTo: backgroundCard.leadingAnchor, constant: 12),
-            titleLabel.trailingAnchor.constraint(equalTo: backgroundCard.trailingAnchor, constant: -12),
-            titleLabel.topAnchor.constraint(equalTo: thumbnailView.bottomAnchor, constant: 8),
-            titleLabel.bottomAnchor.constraint(equalTo: backgroundCard.bottomAnchor, constant: -12)
+            titleLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 4),
+            titleLabel.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -4),
+            titleLabel.topAnchor.constraint(equalTo: backgroundCard.bottomAnchor, constant: 12)
         ])
     }
 }

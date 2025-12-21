@@ -84,11 +84,11 @@ final class SettingsViewController: UIViewController {
         let fm = FileManager.default
         var total: Int64 = 0
         
-        let appSupportPath = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        let tdlibFilesPath = appSupportPath.appendingPathComponent("tdlib_files")
+        let cachesURL = fm.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        let tdlibFilesPath = cachesURL.appendingPathComponent("tdlib_files")
         
         let paths = [
-            fm.urls(for: .cachesDirectory, in: .userDomainMask)[0],
+            cachesURL,
             URL(fileURLWithPath: NSTemporaryDirectory()),
             tdlibFilesPath
         ]
@@ -222,11 +222,11 @@ final class SettingsViewController: UIViewController {
     
     @objc private func clearCacheTapped() {
         let fm = FileManager.default
-        let appSupportPath = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        let tdlibFilesPath = appSupportPath.appendingPathComponent("tdlib_files")
+        let cachesURL = fm.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        let tdlibFilesPath = cachesURL.appendingPathComponent("tdlib_files")
 
         let paths = [
-            fm.urls(for: .cachesDirectory, in: .userDomainMask)[0],
+            cachesURL,
             URL(fileURLWithPath: NSTemporaryDirectory()),
             tdlibFilesPath
         ]

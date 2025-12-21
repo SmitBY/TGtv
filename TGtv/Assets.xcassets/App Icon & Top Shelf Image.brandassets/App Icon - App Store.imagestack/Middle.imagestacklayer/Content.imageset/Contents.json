@@ -4,6 +4,10 @@
       "filename" : "middle_1x.png",
       "idiom" : "tv",
       "scale" : "1x"
+    },
+    {
+      "idiom" : "tv",
+      "scale" : "2x"
     }
   ],
   "info" : {
@@ -11,4 +15,3 @@
     "version" : 1
   }
 }
-

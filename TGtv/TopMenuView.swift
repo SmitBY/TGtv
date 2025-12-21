@@ -5,7 +5,7 @@ class TopMenuView: UIView {
     
     private let container: UIView = {
         let view = UIView()
-        view.backgroundColor = UIColor(red: 0.184, green: 0.184, blue: 0.184, alpha: 1)
+        view.backgroundColor = UIColor(red: 47/255, green: 47/255, blue: 47/255, alpha: 1)
         view.layer.cornerRadius = 37 // Половина высоты 74
         view.translatesAutoresizingMaskIntoConstraints = false
         return view
@@ -210,10 +210,13 @@ class MenuButton: UIButton {
     }
     
     private func setupStyle() {
-        titleLabel?.font = .systemFont(ofSize: 24, weight: isTabSelected ? .bold : .medium)
-        setTitleColor(isTabSelected ? .black : .white, for: .normal)
-        backgroundColor = isTabSelected ? .white : .clear
-        layer.cornerRadius = 28
+        titleLabel?.font = .systemFont(ofSize: 29, weight: .bold) // SF Pro 29px Bold as per CSS
+        setTitleColor(isTabSelected ? .black : UIColor(red: 153/255, green: 153/255, blue: 153/255, alpha: 1.0), for: .normal)
+        backgroundColor = isTabSelected ? UIColor(red: 208/255, green: 209/255, blue: 211/255, alpha: 1.0) : .clear
+        layer.cornerRadius = 28 // Updated to match visual style, CSS says 35px for background but 28px might be better for 56px height
+        if isTabSelected {
+            layer.cornerRadius = 35 // To match CSS "border-radius: 35px" for background
+        }
     }
     
     required init?(coder: NSCoder) {
