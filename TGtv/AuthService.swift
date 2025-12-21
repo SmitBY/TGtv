@@ -109,17 +109,22 @@ class AuthService {
             
             // Работа с файловой системой в фоновом потоке
             let (databasePath, filesPath) = try await Task.detached(priority: .utility) {
-                let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].path
-                let dbPath = (documentsPath as NSString).appendingPathComponent("tdlib")
-                let fPath = (documentsPath as NSString).appendingPathComponent("tdlib_files")
+                let fileManager = FileManager.default
+                // На tvOS используем Application Support вместо Documents
+                let appSupportURL = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
                 
-                if !FileManager.default.fileExists(atPath: dbPath) {
-                    try FileManager.default.createDirectory(atPath: dbPath, withIntermediateDirectories: true)
+                let dbPath = appSupportURL.appendingPathComponent("tdlib", isDirectory: true).path
+                let fPath = appSupportURL.appendingPathComponent("tdlib_files", isDirectory: true).path
+                
+                // Проверяем и создаем всю цепочку директорий
+                if !fileManager.fileExists(atPath: dbPath) {
+                    try fileManager.createDirectory(atPath: dbPath, withIntermediateDirectories: true)
                 }
                 
-                if !FileManager.default.fileExists(atPath: fPath) {
-                    try FileManager.default.createDirectory(atPath: fPath, withIntermediateDirectories: true)
+                if !fileManager.fileExists(atPath: fPath) {
+                    try fileManager.createDirectory(atPath: fPath, withIntermediateDirectories: true)
                 }
+                
                 return (dbPath, fPath)
             }.value
             
