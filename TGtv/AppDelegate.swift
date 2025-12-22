@@ -1248,7 +1248,40 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         }
         
         Task {
+            // 1. Очищаем выбранные чаты
+            selectedChatsStore.clear()
+            
+            // 2. Очищаем кэш списка чатов
+            ChatListViewModel.clearCache()
+            
+            // 3. Очищаем все временные файлы и загруженные видео/миниатюры
+            clearAllAppFiles()
+            
+            // 4. Выходим из аккаунта (TDLib удалит свою базу при logOut)
             await authService.logout()
+        }
+    }
+    
+    private func clearAllAppFiles() {
+        let fm = FileManager.default
+        let cachesURL = fm.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        let tempURL = URL(fileURLWithPath: NSTemporaryDirectory())
+        
+        let paths = [cachesURL, tempURL]
+        
+        for url in paths {
+            if let contents = try? fm.contentsOfDirectory(at: url, includingPropertiesForKeys: nil, options: []) {
+                for file in contents {
+                    // При выходе мы можем удалить даже папку tdlib, 
+                    // но logOut сам позаботится о деавторизации.
+                    // Однако для "полного" удаления лучше дождаться логаута или 
+                    // просто удалить всё КРОМЕ tdlib до него, а TDLib сам очистится.
+                    if file.lastPathComponent == "tdlib" {
+                        continue 
+                    }
+                    try? fm.removeItem(at: file)
+                }
+            }
         }
     }
     
@@ -1365,10 +1398,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             viewModel: viewModel,
             selectedChats: Set(selectedChatsStore.load()),
             onSaveSelection: { [weak self] ids in
-                guard let self, let nav = self.navigationController else { return }
+                guard let self else { return }
                 self.selectedChatsStore.save(ids: Array(ids))
                 self.selectedChatsStore.markCompleted()
-                nav.setViewControllers([self.makeHomeController()], animated: true)
             }
         )
         return vc

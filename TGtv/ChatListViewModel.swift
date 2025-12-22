@@ -366,6 +366,11 @@ final class ChatListViewModel: ObservableObject {
         }
     }
     
+    static func clearCache() {
+        let url = makeCacheURL()
+        try? FileManager.default.removeItem(at: url)
+    }
+    
     private func chatComesBefore(_ lhs: TDLibKit.Chat, _ rhs: TDLibKit.Chat) -> Bool {
         let lhsOrder = mainChatListOrder(for: lhs)
         let rhsOrder = mainChatListOrder(for: rhs)

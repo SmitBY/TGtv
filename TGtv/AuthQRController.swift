@@ -663,8 +663,12 @@ final class AuthQRController: UIViewController {
                 loadingIndicator.stopAnimating()
                 loadingIndicator.isHidden = true
                 
-                // На tvOS теперь фокус останется на поле, просто вызываем клавиатуру
-                self.passwordTextField.becomeFirstResponder()
+                // На tvOS при нажатии "Done" клавиатура начинает скрываться.
+                // Чтобы она открылась снова без ошибок презентации, нужно дождаться завершения цикла анимации.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                    guard let self = self, !self.isLoggingIn, self.passwordView?.isHidden == false else { return }
+                    self.passwordTextField.becomeFirstResponder()
+                }
             case .success:
                 DebugLogger.shared.log("AuthQRController: Пароль принят")
             }

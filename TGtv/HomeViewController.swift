@@ -44,6 +44,7 @@ final class HomeViewController: UIViewController, AVPlayerViewControllerDelegate
     private var loadingOverlayMessage: String?
     private var suppressLoadingOverlay = false
     private var lastDownloadLog: [String: (downloaded: Int64, expected: Int64)] = [:]
+    private var lastSelectedIndexPath: IndexPath?
     private var isFullscreenLoadingVisible: Bool {
         fullscreenLoadingView?.isHidden == false
     }
@@ -61,6 +62,11 @@ final class HomeViewController: UIViewController, AVPlayerViewControllerDelegate
     }
     
     override var preferredFocusEnvironments: [UIFocusEnvironment] {
+        // Если у нас есть сохраненный индекс (например, после просмотра видео),
+        // приоритет отдаем коллекции, чтобы фокус вернулся на карточку.
+        if let cv = collectionView, lastSelectedIndexPath != nil {
+            return [cv]
+        }
         if let menu = topMenu, let target = menu.currentFocusTarget() {
             return [target]
         }
@@ -167,6 +173,13 @@ final class HomeViewController: UIViewController, AVPlayerViewControllerDelegate
         topMenu?.setCurrentIndex(0) // Синхронизируем вкладку
         Task { @MainActor in
             await reloadData()
+            
+            // После перезагрузки данных, если мы вернулись из видео,
+            // заставляем систему пересчитать фокус (используя наш новый preferredFocusEnvironments).
+            if lastSelectedIndexPath != nil {
+                setNeedsFocusUpdate()
+                updateFocusIfNeeded()
+            }
         }
     }
 
@@ -424,6 +437,12 @@ final class HomeViewController: UIViewController, AVPlayerViewControllerDelegate
         
         let next = context.nextFocusedView
         
+        // Если фокус перешел в хедер (меню), сбрасываем сохраненный индекс,
+        // чтобы при следующем открытии экрана приоритет не отдавался коллекции принудительно.
+        if let next = next, next.isDescendant(of: headerContainer) {
+            lastSelectedIndexPath = nil
+        }
+        
         // Управление гайдом: если фокус в хедере - гайд помогает выйти вниз,
         // если фокус в коллекции - гайд помогает зайти вверх.
         if let next = next, next.isDescendant(of: headerContainer) {
@@ -651,6 +670,7 @@ extension HomeViewController: UICollectionViewDelegate {
 
     func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
         guard let item = dataSource.itemIdentifier(for: indexPath), item.videoFileId != 0 else { return }
+        lastSelectedIndexPath = indexPath
         playVideo(item)
     }
     
