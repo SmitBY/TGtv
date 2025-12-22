@@ -30,6 +30,10 @@ final class HomeViewModel: ObservableObject {
     @Published private(set) var sections: [HomeSection] = []
     @Published private(set) var isLoading = false
     
+    private var lastMessageIds: [Int64: Int64] = [:]
+    private var canLoadMore: [Int64: Bool] = [:]
+    private var isSectionLoading: Set<Int64> = []
+    
     init(client: TDLibClient, store: SelectedChatsStore) {
         self.client = client
         self.store = store
@@ -39,16 +43,21 @@ final class HomeViewModel: ObservableObject {
         let ids = store.load()
         guard !ids.isEmpty else {
             sections = []
+            lastMessageIds = [:]
+            canLoadMore = [:]
             return
         }
         
         isLoading = true
+        lastMessageIds = [:]
+        canLoadMore = [:]
+        
         var newSections: [HomeSection] = []
         
         for chatId in ids {
             do {
                 let chat = try await client.getChat(chatId: chatId)
-                let videos = await fetchVideos(chatId: chatId)
+                let videos = await fetchVideos(chatId: chatId, fromMessageId: 0)
                 let section = HomeSection(
                     chatId: chatId,
                     title: chat.title,
@@ -63,18 +72,61 @@ final class HomeViewModel: ObservableObject {
         isLoading = false
     }
     
-    private func fetchVideos(chatId: Int64) async -> [HomeVideoItem] {
+    func loadMore(for chatId: Int64) async {
+        guard canLoadMore[chatId] != false else {
+            return 
+        }
+        guard !isSectionLoading.contains(chatId) else {
+            return
+        }
+        
+        let fromMessageId = lastMessageIds[chatId] ?? 0
+        
+        guard fromMessageId != 0 || sections.first(where: { $0.chatId == chatId })?.videos.isEmpty == false else {
+            return 
+        }
+
+        isSectionLoading.insert(chatId)
+        
+        let newVideos = await fetchVideos(chatId: chatId, fromMessageId: fromMessageId)
+        
+        if !newVideos.isEmpty {
+            if let index = sections.firstIndex(where: { $0.chatId == chatId }) {
+                var updatedSection = sections[index]
+                let existingIds = Set(updatedSection.videos.map { $0.id })
+                let uniqueNewVideos = newVideos.filter { !existingIds.contains($0.id) }
+                
+                if !uniqueNewVideos.isEmpty {
+                    updatedSection = HomeSection(
+                        chatId: updatedSection.chatId,
+                        title: updatedSection.title,
+                        videos: updatedSection.videos + uniqueNewVideos
+                    )
+                    sections[index] = updatedSection
+                }
+            }
+        }
+        
+        isSectionLoading.remove(chatId)
+    }
+    
+    private func fetchVideos(chatId: Int64, fromMessageId: Int64) async -> [HomeVideoItem] {
         do {
             let result = try await client.searchChatMessages(
                 chatId: chatId,
                 filter: .searchMessagesFilterVideo,
-                fromMessageId: 0,
+                fromMessageId: fromMessageId,
                 limit: 12,
-                offset: 0,
+                offset: 0, 
                 query: "",
                 senderId: nil,
                 topicId: nil
             )
+            
+            // Используем nextFromMessageId от TDLib для следующего запроса
+            lastMessageIds[chatId] = result.nextFromMessageId
+            canLoadMore[chatId] = result.nextFromMessageId != 0
+            
             var items: [HomeVideoItem] = []
             
             for message in result.messages {

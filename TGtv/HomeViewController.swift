@@ -375,6 +375,8 @@ final class HomeViewController: UIViewController, AVPlayerViewControllerDelegate
                 snapshot.appendItems(section.videos, toSection: section.chatId)
             }
         }
+        // Используем false для animatableDifferences если это подгрузка, чтобы избежать прыжков? 
+        // Хотя diffableDataSource сам хорошо справляется.
         dataSource.apply(snapshot, animatingDifferences: true)
     }
     
@@ -633,6 +635,20 @@ final class VideoCell: UICollectionViewCell {
 // MARK: - Collection Delegate
 
 extension HomeViewController: UICollectionViewDelegate {
+    func collectionView(_ collectionView: UICollectionView, willDisplay cell: UICollectionViewCell, forItemAt indexPath: IndexPath) {
+        guard let section = section(at: indexPath.section) else { return }
+        
+        // Если это один из последних 6 элементов в секции, пробуем подгрузить ещё
+        let threshold = 6
+        if indexPath.item >= section.videos.count - threshold {
+            let chatId = section.chatId
+            Task { @MainActor in
+                await viewModel.loadMore(for: chatId)
+                applySnapshot(sections: viewModel.sections)
+            }
+        }
+    }
+
     func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
         guard let item = dataSource.itemIdentifier(for: indexPath), item.videoFileId != 0 else { return }
         playVideo(item)
