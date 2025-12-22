@@ -430,7 +430,7 @@ final class AuthQRController: UIViewController {
         // Version Label
         versionLabel = UILabel()
         versionLabel.translatesAutoresizingMaskIntoConstraints = false
-        versionLabel.text = "1.0.0"
+        versionLabel.text = "1.0.1"
         versionLabel.textColor = UIColor.white.withAlphaComponent(0.3)
         versionLabel.font = .systemFont(ofSize: 20, weight: .regular)
         view.addSubview(versionLabel)
