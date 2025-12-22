@@ -261,8 +261,8 @@ final class HomeViewController: UIViewController, AVPlayerViewControllerDelegate
         
         NSLayoutConstraint.activate([
             collectionView.topAnchor.constraint(equalTo: view.topAnchor), // Занимаем весь экран, чтобы прокрутка была видна под меню
-            collectionView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 40),
-            collectionView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -40),
+            collectionView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            collectionView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             collectionView.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -40)
         ])
         
@@ -327,6 +327,7 @@ final class HomeViewController: UIViewController, AVPlayerViewControllerDelegate
         // Updated sizes to match CSS: 320x173 thumbnail + text area
         let itemSize = NSCollectionLayoutSize(widthDimension: .absolute(320), heightDimension: .absolute(280))
         let item = NSCollectionLayoutItem(layoutSize: itemSize)
+        // Добавляем небольшие отступы между карточками (по 10px с каждой стороны)
         item.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 10, bottom: 0, trailing: 10)
         
         let groupSize = NSCollectionLayoutSize(widthDimension: .estimated(1600), heightDimension: .absolute(280))
@@ -334,8 +335,12 @@ final class HomeViewController: UIViewController, AVPlayerViewControllerDelegate
         
         let section = NSCollectionLayoutSection(group: group)
         section.orthogonalScrollingBehavior = .continuous
-        section.interGroupSpacing = 20
-        section.contentInsets = NSDirectionalEdgeInsets(top: 20, leading: 0, bottom: 40, trailing: 0)
+        section.interGroupSpacing = 20 // 20 + 10 + 10 = 40px spacing between cards
+        
+        // КРИТИЧНО: игнорируем safe area (90px), чтобы отступ считался строго от края экрана
+        section.contentInsetsReference = .none
+        // 54px + 10px (item leading inset) = 64px. Теперь первая карточка будет СТРОГО под логотипом (64px).
+        section.contentInsets = NSDirectionalEdgeInsets(top: 20, leading: 54, bottom: 40, trailing: 64)
         
         let headerSize = NSCollectionLayoutSize(widthDimension: .fractionalWidth(1.0), heightDimension: .absolute(60))
         let header = NSCollectionLayoutBoundarySupplementaryItem(layoutSize: headerSize, elementKind: UICollectionView.elementKindSectionHeader, alignment: .top)
@@ -618,8 +623,8 @@ final class VideoCell: UICollectionViewCell {
             placeholderLabel.centerXAnchor.constraint(equalTo: thumbnailView.centerXAnchor),
             placeholderLabel.centerYAnchor.constraint(equalTo: thumbnailView.centerYAnchor),
             
-            titleLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 4),
-            titleLabel.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -4),
+            titleLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 0),
+            titleLabel.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: 0),
             titleLabel.topAnchor.constraint(equalTo: backgroundCard.bottomAnchor, constant: 12)
         ])
     }
@@ -1740,8 +1745,9 @@ final class ChatHeaderView: UICollectionReusableView {
         titleLabel.font = .systemFont(ofSize: 30, weight: .bold)
         addSubview(titleLabel)
         NSLayoutConstraint.activate([
-            titleLabel.leadingAnchor.constraint(equalTo: leadingAnchor),
-            titleLabel.trailingAnchor.constraint(equalTo: trailingAnchor),
+            // Секция уже имеет отступ 54px. Добавляем 10px, чтобы заголовок был ровно на 64px (как лого и карточки).
+            titleLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
+            titleLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
             titleLabel.bottomAnchor.constraint(equalTo: bottomAnchor),
             titleLabel.topAnchor.constraint(equalTo: topAnchor)
         ])

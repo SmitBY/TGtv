@@ -22,8 +22,9 @@ final class AuthQRController: UIViewController {
     private var debugLogView: UITextView!
     private var debugLogContainer: UIView!
     private var versionLabel: UILabel!
+    private var isLoggingIn = false
     private var cancellables = Set<AnyCancellable>()
-
+    
     // MARK: - Scaled layout (base: 1920x1080)
     private struct LayoutBase {
         static let screenW: CGFloat = 1920
@@ -615,10 +616,14 @@ final class AuthQRController: UIViewController {
             .store(in: &cancellables)
     }
     @objc private func loginButtonTapped() {
-        guard let password = passwordTextField.text, !password.isEmpty else {
+        guard !isLoggingIn else { return }
+        
+        let password = passwordTextField.text ?? ""
+        if password.isEmpty {
             statusLabel.text = "Введите пароль"
             statusLabel.textColor = UIColor(red: 1, green: 0.4, blue: 0.4, alpha: 1)
             DebugLogger.shared.log("AuthQRController: Попытка входа с пустым паролем")
+            passwordTextField.becomeFirstResponder()
             return
         }
         sendPassword(password)
@@ -626,29 +631,41 @@ final class AuthQRController: UIViewController {
     
     private func sendPassword(_ password: String) {
         DebugLogger.shared.log("AuthQRController: Отправка пароля")
+        isLoggingIn = true
         loginButton.isEnabled = false
         loginButton.setTitle("Вход...", for: .disabled)
         loginButton.alpha = 0.6
-        passwordTextField.isEnabled = false
+        // passwordTextField.isEnabled = false // НЕ отключаем, чтобы не терять фокус на tvOS
         loadingIndicator.isHidden = false
         loadingIndicator.startAnimating()
         
         Task { @MainActor in
-            let success = await authService.checkPassword(password)
+            let result = await authService.checkPassword(password)
+            isLoggingIn = false
             
-            if !success {
-                DebugLogger.shared.log("AuthQRController: Неверный пароль")
-                statusLabel.text = "Неверный пароль"
+            switch result {
+            case .failure(let error):
+                let message: String
+                if case .error(let msg) = error {
+                    message = msg
+                } else {
+                    message = "Неизвестная ошибка"
+                }
+                
+                DebugLogger.shared.log("AuthQRController: Ошибка входа: \(message)")
+                statusLabel.text = message
                 statusLabel.textColor = UIColor(red: 1, green: 0.4, blue: 0.4, alpha: 1)
                 loginButton.isEnabled = true
                 loginButton.setTitle("Войти", for: .normal)
                 loginButton.alpha = 1
-                passwordTextField.isEnabled = true
-                passwordTextField.text = ""
+                // passwordTextField.isEnabled = true
+                passwordTextField.text = "" 
                 loadingIndicator.stopAnimating()
                 loadingIndicator.isHidden = true
-                passwordTextField.becomeFirstResponder()
-            } else {
+                
+                // На tvOS теперь фокус останется на поле, просто вызываем клавиатуру
+                self.passwordTextField.becomeFirstResponder()
+            case .success:
                 DebugLogger.shared.log("AuthQRController: Пароль принят")
             }
         }
@@ -715,8 +732,8 @@ final class AuthQRController: UIViewController {
 
 extension AuthQRController: UITextFieldDelegate {
     func textFieldShouldReturn(_ textField: UITextField) -> Bool {
-        if textField == passwordTextField, let password = textField.text, !password.isEmpty {
-            sendPassword(password)
+        if textField == passwordTextField {
+            loginButtonTapped()
         }
         return true
     }

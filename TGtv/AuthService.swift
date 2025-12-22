@@ -2,6 +2,10 @@ import Foundation
 import TDLibKit
 import Combine
 
+enum PasswordError: Swift.Error {
+    case error(String)
+}
+
 @MainActor
 class AuthService {
     private let client: TDLibClient
@@ -165,12 +169,19 @@ class AuthService {
         }
     }
     
-    func checkPassword(_ password: String) async -> Bool {
+    func checkPassword(_ password: String) async -> Result<Void, PasswordError> {
         do {
             try await client.checkAuthenticationPassword(password: password)
-            return true
+            return .success(())
         } catch {
-            return false
+            let errorDesc = "\(error)"
+            DebugLogger.shared.log("AuthService: Ошибка checkPassword: \(errorDesc)")
+            if errorDesc.contains("PASSWORD_HASH_INVALID") {
+                return .failure(.error("Неверный пароль"))
+            } else if errorDesc.contains("FLOOD_WAIT") {
+                return .failure(.error("Слишком много попыток. Пожалуйста, подождите."))
+            }
+            return .failure(.error("Ошибка: \(errorDesc)"))
         }
     }
     

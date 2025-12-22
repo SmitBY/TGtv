@@ -85,18 +85,25 @@ final class SettingsViewController: UIViewController {
         var total: Int64 = 0
         
         let cachesURL = fm.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-        let tdlibFilesPath = cachesURL.appendingPathComponent("tdlib_files")
+        let tempURL = URL(fileURLWithPath: NSTemporaryDirectory())
         
         let paths = [
             cachesURL,
-            URL(fileURLWithPath: NSTemporaryDirectory()),
-            tdlibFilesPath
+            tempURL
         ]
         
         for url in paths {
-            if let enumerator = fm.enumerator(at: url, includingPropertiesForKeys: [.fileSizeKey], options: [], errorHandler: nil) {
+            if let enumerator = fm.enumerator(at: url, includingPropertiesForKeys: [.fileSizeKey, .isDirectoryKey], options: [.skipsHiddenFiles], errorHandler: nil) {
                 for case let fileURL as URL in enumerator {
-                    if let size = try? fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize {
+                    // Пропускаем саму папку 'tdlib' и всё что внутри неё
+                    let path = fileURL.path
+                    if path.contains("/tdlib/") || path.hasSuffix("/tdlib") {
+                        continue
+                    }
+                    
+                    if let resourceValues = try? fileURL.resourceValues(forKeys: [.fileSizeKey, .isDirectoryKey]),
+                       let isDirectory = resourceValues.isDirectory, !isDirectory,
+                       let size = resourceValues.fileSize {
                         total += Int64(size)
                     }
                 }
@@ -223,26 +230,26 @@ final class SettingsViewController: UIViewController {
     @objc private func clearCacheTapped() {
         let fm = FileManager.default
         let cachesURL = fm.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-        let tdlibFilesPath = cachesURL.appendingPathComponent("tdlib_files")
+        let tempURL = URL(fileURLWithPath: NSTemporaryDirectory())
 
         let paths = [
             cachesURL,
-            URL(fileURLWithPath: NSTemporaryDirectory()),
-            tdlibFilesPath
+            tempURL
         ]
         
         for url in paths {
             if let contents = try? fm.contentsOfDirectory(at: url, includingPropertiesForKeys: nil, options: []) {
                 for file in contents {
+                    // КРИТИЧЕСКИ ВАЖНО: Не удаляем папку 'tdlib', так как там хранится база данных и сессия пользователя.
+                    // Если её удалить, произойдет разлогин.
+                    if file.lastPathComponent == "tdlib" {
+                        continue
+                    }
                     try? fm.removeItem(at: file)
                 }
             }
         }
         updateStats()
-        
-        let alert = UIAlertController(title: "Очистка", message: "Все временные и загруженные файлы удалены", preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "OK", style: .default))
-        present(alert, animated: true)
     }
     
     @objc private func logoutTapped() {
