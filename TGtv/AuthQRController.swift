@@ -228,7 +228,7 @@ final class AuthQRController: UIViewController {
         qrHeaderLabel.font = .systemFont(ofSize: 31, weight: .bold)
         qrHeaderLabel.textAlignment = .center
         qrHeaderLabel.numberOfLines = 1
-        qrHeaderLabel.text = "Scan from Mobile Telegram"
+        qrHeaderLabel.text = NSLocalizedString("auth.qr.title", comment: "")
         qrContainerView.addSubview(qrHeaderLabel)
 
         // Шаги (как в присланном макете)
@@ -244,8 +244,14 @@ final class AuthQRController: UIViewController {
         // Важно: для attributedText выравнивание задаём здесь, иначе может выглядеть как "справа"
         paragraphStyle.alignment = .center
         paragraphStyle.baseWritingDirection = .leftToRight
+        
+        let step1 = NSLocalizedString("auth.qr.step1", comment: "")
+        let step2 = NSLocalizedString("auth.qr.step2", comment: "")
+        let step3 = NSLocalizedString("auth.qr.step3", comment: "")
+        let combinedSteps = "\(step1)\n\(step2)\n\(step3)"
+        
         qrStepsLabel.attributedText = NSMutableAttributedString(
-            string: "1. Open Telegram on your phone\n2. Go to Settings > Devices > Link Device\n3. Scan this image to Log in",
+            string: combinedSteps,
             attributes: [.paragraphStyle: paragraphStyle]
         )
         qrContainerView.addSubview(qrStepsLabel)

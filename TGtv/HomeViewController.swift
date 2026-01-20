@@ -205,9 +205,9 @@ final class HomeViewController: UIViewController, AVPlayerViewControllerDelegate
         backgroundImageView = UIImageView()
         backgroundImageView.translatesAutoresizingMaskIntoConstraints = false
         backgroundImageView.contentMode = .scaleAspectFill
-        if let img = UIImage(named: "Background Image") {
+        if let img = UIImage(named: "tmedia-bgr 1") {
             backgroundImageView.image = img
-        } else if let path = Bundle.main.path(forResource: "Background Image", ofType: "png"),
+        } else if let path = Bundle.main.path(forResource: "tmedia-bgr 1", ofType: "png"),
                   let img = UIImage(contentsOfFile: path) {
             backgroundImageView.image = img
         } else {
@@ -790,6 +790,15 @@ extension HomeViewController: UICollectionViewDelegate {
     }
     
     private func playVideo(_ item: HomeVideoItem) {
+        guard SubscriptionStore.canWatchVideo else {
+            setLoading(false)
+            hideFullscreenLoading()
+            (UIApplication.shared.delegate as? AppDelegate)?.showSubscription()
+            return
+        }
+        
+        SubscriptionStore.didWatchVideo()
+        
         let selectionId = UUID().uuidString
         currentSelectionId = selectionId
         suppressLoadingOverlay = false

@@ -376,7 +376,7 @@ private enum KeychainKV {
     private static let service = Bundle.main.bundleIdentifier ?? "TGtv"
 
     static func string(forKey key: String) -> String? {
-        var query: [String: Any] = [
+        let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: key,
@@ -384,8 +384,8 @@ private enum KeychainKV {
             kSecReturnData as String: true
         ]
 
-        // На некоторых сборках tvOS полезно явно запретить UI-подтверждения.
-        query[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUIFail
+        // На tvOS `LAContext` недоступен, а наши ключи не создаются с AccessControl,
+        // поэтому запрос не должен требовать UI-аутентификации.
 
         var item: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &item)

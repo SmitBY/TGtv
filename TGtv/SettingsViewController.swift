@@ -12,7 +12,7 @@ final class SettingsViewController: UIViewController {
     private let languageButton = UIButton(type: .system)
     private let cacheLabel = UILabel()
     
-    private let normalBackground = UIColor.systemGray.withAlphaComponent(0.2)
+    private let normalBackground = UIColor.systemGray.withAlphaComponent(1)
     private let logoutNormalBackground = UIColor.systemRed.withAlphaComponent(0.85)
     private let focusedBackground = UIColor.white
     
@@ -276,7 +276,7 @@ final class SettingsViewController: UIViewController {
         button.setTitleColor(.white, for: .normal)
         button.setTitleColor(.black, for: .focused)
         button.backgroundColor = color
-        button.layer.cornerRadius = 15
+        button.layer.cornerRadius = 35
         button.clipsToBounds = true
     }
     
@@ -349,7 +349,7 @@ final class SettingsViewController: UIViewController {
                     message: NSLocalizedString("settings.restartMessage", comment: ""),
                     preferredStyle: .alert
                 )
-                restartAlert.addAction(UIAlertAction(title: "OK", style: .default) { _ in
+                restartAlert.addAction(UIAlertAction(title: NSLocalizedString("button.ok", comment: ""), style: .default) { _ in
                     exit(0) // На tvOS/iOS это грубый способ, но самый надежный для смены языка AppleLanguages
                 })
                 self.present(restartAlert, animated: true)

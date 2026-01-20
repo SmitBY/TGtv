@@ -27,9 +27,9 @@ class TopMenuView: UIView {
     private var selectedIndex: Int
     
     private var pendingSelectionTask: DispatchWorkItem?
-    private var isLocked = false
-    private var lastSwitchTime: TimeInterval = 0
-
+    private var pendingSelectionIndex: Int?
+    private let selectionDebounce: TimeInterval = 0.3
+    
     init(items: [String], selectedIndex: Int) {
         self.items = items
         self.selectedIndex = selectedIndex
@@ -112,40 +112,33 @@ class TopMenuView: UIView {
     func cancelPendingTransitions() {
         pendingSelectionTask?.cancel()
         pendingSelectionTask = nil
+        pendingSelectionIndex = nil
     }
 
     func buttonFocused(at index: Int, isInternalChange: Bool) {
-        if isLocked { return }
-        
-        if !isInternalChange {
-            pendingSelectionTask?.cancel()
-            updateSelection(to: index)
-            return
-        }
+        cancelPendingTransitions()
 
-        let now = CACurrentMediaTime()
-        if now - lastSwitchTime < 0.5 { return }
+        let previousIndex = selectedIndex
+        updateSelection(to: index) // визуально переносим выделение сразу
 
-        pendingSelectionTask?.cancel()
-        
-        if selectedIndex != index {
-            updateSelection(to: index)
-            
-            let task = DispatchWorkItem { [weak self] in
-                guard let self = self else { return }
-                if self.isLocked { return }
-                
-                self.isLocked = true
-                self.lastSwitchTime = CACurrentMediaTime()
-                self.onTabSelected?(index)
-                
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-                    self?.isLocked = false
-                }
-            }
-            pendingSelectionTask = task
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: task)
+        // Если фокус пришел извне меню — не автопереключаем вкладку, только подсветка
+        guard isInternalChange else { return }
+
+        // Если вкладка не изменилась — ничего не планируем
+        guard previousIndex != index else { return }
+
+        // Дебаунс: даем пользователю проскочить несколько вкладок,
+        // и переключаем экран только по последней выбранной.
+        pendingSelectionIndex = index
+        let task = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            guard self.pendingSelectionIndex == index else { return }
+            self.pendingSelectionIndex = nil
+            self.pendingSelectionTask = nil
+            self.onTabSelected?(index)
         }
+        pendingSelectionTask = task
+        DispatchQueue.main.asyncAfter(deadline: .now() + selectionDebounce, execute: task)
     }
     
     func setCurrentIndex(_ index: Int) {
@@ -153,21 +146,17 @@ class TopMenuView: UIView {
         if index < buttons.count {
             updateSelection(to: index)
         }
-        
-        isLocked = true
-        lastSwitchTime = CACurrentMediaTime()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-            self?.isLocked = false
-        }
     }
     
     private func updateSelection(to index: Int) {
         selectedIndex = index
-        for (idx, btn) in buttons.enumerated() {
-            btn.updateSelectedState(idx == index)
+        UIView.performWithoutAnimation {
+            for (idx, btn) in buttons.enumerated() {
+                btn.updateSelectedState(idx == index)
+            }
         }
     }
-
+    
     func currentFocusTarget() -> UIFocusEnvironment? {
         guard selectedIndex >= 0, selectedIndex < buttons.count else { return nil }
         return buttons[selectedIndex]
@@ -218,7 +207,13 @@ class MenuButton: UIButton {
     
     func updateSelectedState(_ selected: Bool) {
         self.isTabSelected = selected
-        setupStyle()
+        UIView.performWithoutAnimation {
+            self.setupStyle()
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            self.shadowLayer.shadowOpacity = selected ? 1 : 0
+            CATransaction.commit()
+        }
     }
     
     private func setupStyle() {
@@ -229,16 +224,31 @@ class MenuButton: UIButton {
         
         if isTabSelected {
             container.foregroundColor = .black
+            config.baseForegroundColor = .black
             config.background.backgroundColor = UIColor(red: 208/255, green: 209/255, blue: 211/255, alpha: 1.0)
-            config.background.cornerRadius = 35
+            config.background.cornerRadius = 37
         } else {
+            // Цвет текста #999999 для невыбранных кнопок
             container.foregroundColor = UIColor(red: 153/255, green: 153/255, blue: 153/255, alpha: 1.0)
+            config.baseForegroundColor = UIColor(red: 153/255, green: 153/255, blue: 153/255, alpha: 1.0)
             config.background.backgroundColor = .clear
-            config.background.cornerRadius = 28
+            config.background.cornerRadius = 37
         }
         
         config.attributedTitle = AttributedString(titleText, attributes: container)
-        self.configuration = config
+        UIView.performWithoutAnimation {
+            self.configuration = config
+        }
+        
+        // Устанавливаем цвет текста в зависимости от состояния
+        if isTabSelected {
+            self.setTitleColor(.black, for: .normal)
+        } else {
+            self.setTitleColor(UIColor(red: 153/255, green: 153/255, blue: 153/255, alpha: 1.0), for: .normal)
+        }
+        // При фокусе всегда черный
+        self.setTitleColor(.black, for: .focused)
+        self.setTitleColor(.black, for: .highlighted)
         
         // Дополнительные настройки для titleLabel, которые не покрываются Configuration
         titleLabel?.numberOfLines = 1
@@ -258,7 +268,7 @@ class MenuButton: UIButton {
         shadowLayer.shadowOpacity = isTabSelected ? 1 : 0
         shadowLayer.shadowRadius = 4
         shadowLayer.shadowOffset = CGSize(width: 0, height: 4)
-        shadowLayer.cornerRadius = 28
+        shadowLayer.cornerRadius = 37
         layer.insertSublayer(shadowLayer, at: 0)
     }
     
@@ -266,6 +276,19 @@ class MenuButton: UIButton {
         super.layoutSubviews()
         shadowLayer.frame = bounds
         shadowLayer.shadowPath = UIBezierPath(roundedRect: bounds, cornerRadius: layer.cornerRadius).cgPath
+    }
+    
+    override func titleColor(for state: UIControl.State) -> UIColor? {
+        // При фокусе всегда черный цвет
+        if state.contains(.focused) {
+            return .black
+        }
+        // Для невыбранных кнопок серый цвет #999999, для выбранных - черный
+        if isTabSelected {
+            return .black
+        } else {
+            return UIColor(red: 153/255, green: 153/255, blue: 153/255, alpha: 1.0)
+        }
     }
     
     override func didUpdateFocus(in context: UIFocusUpdateContext, with coordinator: UIFocusAnimationCoordinator) {
@@ -283,25 +306,31 @@ class MenuButton: UIButton {
                 }
                 parent = parent?.superview
             }
-        }
-
-        coordinator.addCoordinatedAnimations {
-            if self.isFocused {
+            
+            // Убираем анимацию координатора, делаем всё мгновенно
+            UIView.performWithoutAnimation {
                 self.transform = CGAffineTransform(scaleX: 1.1, y: 1.1)
                 if var config = self.configuration {
-                    config.background.backgroundColor = .white
+                    // Цвет фона #2F2F2F (47, 47, 47)
+                    config.background.backgroundColor = UIColor(red: 47/255, green: 47/255, blue: 47/255, alpha: 1.0)
+                    config.baseForegroundColor = .black
+                    
                     var container = AttributeContainer()
                     container.font = .systemFont(ofSize: 29, weight: .bold)
                     container.foregroundColor = .black
                     config.attributedTitle = AttributedString(self.titleText, attributes: container)
                     self.configuration = config
                 }
+                self.titleLabel?.textColor = .black
                 self.shadowLayer.shadowOpacity = 0.5
-            } else {
+            }
+        } else {
+            // Когда фокус уходит, сбрасываем состояние мгновенно
+            UIView.performWithoutAnimation {
                 self.transform = .identity
-                // Возвращаем стиль в зависимости от того, выбран ли таб
                 self.setupStyle()
                 self.shadowLayer.shadowOpacity = self.isTabSelected ? 1 : 0
+                self.titleLabel?.textColor = self.isTabSelected ? .black : UIColor(red: 153/255, green: 153/255, blue: 153/255, alpha: 1.0)
             }
         }
     }

@@ -39,77 +39,17 @@ final class HelpViewController: UIViewController {
     }
 
     private func setupBackground() {
-        view.backgroundColor = .white // background: #FFFFFF;
-
-        // Background Image (visibility: hidden in CSS, but we'll implement it as per specs)
-        let bgImageView = UIImageView(image: UIImage(named: "Background Image"))
-        bgImageView.translatesAutoresizingMaskIntoConstraints = false
-        bgImageView.contentMode = .scaleAspectFill
-        bgImageView.isHidden = true // visibility: hidden
-        bgImageView.transform = CGAffineTransform(scaleX: -1, y: 1) // transform: matrix(-1, 0, 0, 1, 0, 0)
-        view.addSubview(bgImageView)
-
         // tmedia-bgr 1
-        let tmediaBgr = UIImageView(image: UIImage(named: "TMedia 1")) // Assuming TMedia 1 is added to assets
+        let tmediaBgr = UIImageView(image: UIImage(named: "tmedia-bgr 1"))
         tmediaBgr.translatesAutoresizingMaskIntoConstraints = false
         tmediaBgr.contentMode = .scaleAspectFill
         view.addSubview(tmediaBgr)
 
-        // Blur layer (Rectangle with backdrop-filter: blur(67.957px))
-        let blurEffect = UIBlurEffect(style: .dark)
-        let blurView = UIVisualEffectView(effect: blurEffect)
-        blurView.translatesAutoresizingMaskIntoConstraints = false
-        // We'll use a custom intensity if needed, but .dark is a good starting point for tvOS
-        view.addSubview(blurView)
-
-        // feather mask (Gradient)
-        let gradientLayer = CAGradientLayer()
-        gradientLayer.frame = view.bounds
-        gradientLayer.colors = [
-            UIColor(red: 56/255, green: 56/255, blue: 57/255, alpha: 0.0001).cgColor,
-            UIColor(red: 53/255, green: 53/255, blue: 53/255, alpha: 0.41).cgColor,
-            UIColor(red: 53/255, green: 53/255, blue: 53/255, alpha: 1.0).cgColor,
-            UIColor(red: 45/255, green: 45/255, blue: 45/255, alpha: 1.0).cgColor
-        ]
-        gradientLayer.locations = [0.5366, 0.5972, 0.7392, 1.0]
-        let gradientView = UIView(frame: view.bounds)
-        gradientView.layer.addSublayer(gradientLayer)
-        gradientView.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(gradientView)
-
-        // blur darken (background: #111111; opacity: 0.5; border: 1px solid #979797;)
-        let darkenView = UIView()
-        darkenView.translatesAutoresizingMaskIntoConstraints = false
-        darkenView.backgroundColor = UIColor(red: 17/255, green: 17/255, blue: 17/255, alpha: 0.5)
-        darkenView.layer.borderColor = UIColor(red: 151/255, green: 151/255, blue: 151/255, alpha: 1.0).cgColor
-        darkenView.layer.borderWidth = 1
-        view.addSubview(darkenView)
-
         NSLayoutConstraint.activate([
-            bgImageView.topAnchor.constraint(equalTo: view.topAnchor),
-            bgImageView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            bgImageView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            bgImageView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-
             tmediaBgr.topAnchor.constraint(equalTo: view.topAnchor),
             tmediaBgr.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             tmediaBgr.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            tmediaBgr.heightAnchor.constraint(equalToConstant: 1080),
-
-            blurView.topAnchor.constraint(equalTo: view.topAnchor),
-            blurView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            blurView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            blurView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-
-            gradientView.topAnchor.constraint(equalTo: view.topAnchor),
-            gradientView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            gradientView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            gradientView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-
-            darkenView.topAnchor.constraint(equalTo: view.topAnchor),
-            darkenView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            darkenView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            darkenView.trailingAnchor.constraint(equalTo: view.trailingAnchor)
+            tmediaBgr.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
     }
 

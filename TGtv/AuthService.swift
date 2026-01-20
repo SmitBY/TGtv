@@ -137,7 +137,7 @@ class AuthService {
                 databaseEncryptionKey: Data(repeating: 0, count: 32),
                 deviceModel: "Apple tvOS",
                 filesDirectory: filesPath,
-                systemLanguageCode: "ru",
+                systemLanguageCode: Locale.current.language.languageCode?.identifier ?? "en",
                 systemVersion: "1.0",
                 useChatInfoDatabase: true,
                 useFileDatabase: true,
