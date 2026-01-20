@@ -1,4 +1,5 @@
 import UIKit
+import Security
 
 final class SubscriptionOfferCard: UIButton {
     private let blurEffect = UIBlurEffect(style: .dark)
@@ -41,6 +42,8 @@ final class SubscriptionOfferCard: UIButton {
             $0.translatesAutoresizingMaskIntoConstraints = false
             $0.textColor = .white
             $0.font = .systemFont(ofSize: 32, weight: .medium)
+            $0.adjustsFontSizeToFitWidth = true
+            $0.minimumScaleFactor = 0.5
             addSubview($0)
         }
         
@@ -48,6 +51,7 @@ final class SubscriptionOfferCard: UIButton {
         cardSubPriceLabel.textAlignment = .right
         cardPriceLabel.textAlignment = .right
         cardExtraLabel.font = .systemFont(ofSize: 24, weight: .regular)
+        cardExtraLabel.numberOfLines = 1
         
         NSLayoutConstraint.activate([
             blurView.topAnchor.constraint(equalTo: topAnchor),
@@ -56,7 +60,8 @@ final class SubscriptionOfferCard: UIButton {
             blurView.trailingAnchor.constraint(equalTo: trailingAnchor),
             
             cardTitleLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 38.88),
-            cardTitleLabel.topAnchor.constraint(equalTo: topAnchor, constant: 68.86), // 227.86 - 159
+            cardTitleLabel.topAnchor.constraint(equalTo: topAnchor, constant: 68.86),
+            cardTitleLabel.trailingAnchor.constraint(lessThanOrEqualTo: cardPriceLabel.leadingAnchor, constant: -20),
             
             cardPriceLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -52.54),
             cardPriceLabel.topAnchor.constraint(equalTo: topAnchor, constant: 51.55),
@@ -65,7 +70,8 @@ final class SubscriptionOfferCard: UIButton {
             cardSubPriceLabel.topAnchor.constraint(equalTo: cardPriceLabel.bottomAnchor, constant: 4),
             
             cardExtraLabel.leadingAnchor.constraint(equalTo: cardTitleLabel.leadingAnchor),
-            cardExtraLabel.topAnchor.constraint(equalTo: cardTitleLabel.bottomAnchor, constant: 4)
+            cardExtraLabel.topAnchor.constraint(equalTo: cardTitleLabel.bottomAnchor, constant: 4),
+            cardExtraLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -38.88)
         ])
     }
     
@@ -93,10 +99,18 @@ final class SubscriptionOfferCard: UIButton {
 }
 
 final class SubscriptionViewController: UIViewController {
-    private var topMenu: TopMenuView?
-    private let headerContainer = UIView()
-    private var pendingMenuFocus = false
-    
+    private let isMandatory: Bool
+    private var didBlockMenuOnce = false
+
+    init(isMandatory: Bool = false) {
+        self.isMandatory = isMandatory
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
     private let weekCard = SubscriptionOfferCard()
     private let yearPopularCard = SubscriptionOfferCard()
     private let welcomeCard = SubscriptionOfferCard()
@@ -112,27 +126,41 @@ final class SubscriptionViewController: UIViewController {
     private let discountLabel = UILabel()
 
     override var preferredFocusEnvironments: [UIFocusEnvironment] {
-        if pendingMenuFocus, let menu = topMenu, let target = menu.currentFocusTarget() {
-            pendingMenuFocus = false
-            return [target]
-        }
         return [yearPopularCard]
     }
 
     override func viewDidLoad() {
         super.viewDidLoad()
         setupBackground()
-        setupHeaderContainer()
-        setupTopMenuBar()
+        setupLogo()
         setupOfferCards()
         setupRightSideContent()
-        view.bringSubviewToFront(headerContainer)
+    }
+
+    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if isMandatory,
+           !SubscriptionStore.hasChosenPlan,
+           presses.contains(where: { $0.type == .menu }) {
+            // Блокируем обход обязательного экрана подписки кнопкой Menu.
+            // Минимально: просто игнорируем. Один раз можем показать подсказку.
+            if !didBlockMenuOnce, presentedViewController == nil {
+                didBlockMenuOnce = true
+                let alert = UIAlertController(
+                    title: NSLocalizedString("subscription.title", comment: ""),
+                    message: NSLocalizedString("subscription.subtitle", comment: ""),
+                    preferredStyle: .alert
+                )
+                alert.addAction(UIAlertAction(title: NSLocalizedString("button.ok", comment: ""), style: .default))
+                present(alert, animated: true)
+            }
+            return
+        }
+        super.pressesBegan(presses, with: event)
     }
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         navigationController?.setNavigationBarHidden(true, animated: false)
-        topMenu?.setCurrentIndex(4)
     }
 
     private func setupBackground() {
@@ -150,75 +178,31 @@ final class SubscriptionViewController: UIViewController {
         ])
     }
 
-    private func setupHeaderContainer() {
-        headerContainer.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(headerContainer)
-        NSLayoutConstraint.activate([
-            headerContainer.topAnchor.constraint(equalTo: view.topAnchor),
-            headerContainer.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            headerContainer.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            headerContainer.heightAnchor.constraint(equalToConstant: 150)
-        ])
-
+    private func setupLogo() {
         let logo = UIImageView(image: UIImage(named: "Logo"))
         logo.translatesAutoresizingMaskIntoConstraints = false
         logo.contentMode = .scaleAspectFit
-        headerContainer.addSubview(logo)
+        view.addSubview(logo)
         NSLayoutConstraint.activate([
-            logo.leadingAnchor.constraint(equalTo: headerContainer.leadingAnchor, constant: 64),
-            logo.topAnchor.constraint(equalTo: headerContainer.topAnchor, constant: 59),
+            logo.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 64),
+            logo.topAnchor.constraint(equalTo: view.topAnchor, constant: 59),
             logo.widthAnchor.constraint(equalToConstant: 175),
             logo.heightAnchor.constraint(equalToConstant: 66)
         ])
     }
 
-    private func setupTopMenuBar() {
-        let items = [
-            NSLocalizedString("tab.search", comment: ""),
-            NSLocalizedString("tab.home", comment: ""),
-            NSLocalizedString("tab.channels", comment: ""),
-            NSLocalizedString("tab.help", comment: ""),
-            NSLocalizedString("tab.settings", comment: "")
-        ]
-        let menu = TopMenuView(items: items, selectedIndex: 4)
-        menu.translatesAutoresizingMaskIntoConstraints = false
-        menu.onTabSelected = { [weak self] index in
-            self?.handleTabSelection(index)
-        }
-        headerContainer.addSubview(menu)
-        NSLayoutConstraint.activate([
-            menu.topAnchor.constraint(equalTo: headerContainer.topAnchor, constant: 60),
-            menu.leadingAnchor.constraint(equalTo: headerContainer.leadingAnchor),
-            menu.trailingAnchor.constraint(equalTo: headerContainer.trailingAnchor),
-            menu.heightAnchor.constraint(equalToConstant: 74)
-        ])
-        topMenu = menu
-    }
-
-    private func handleTabSelection(_ index: Int) {
-        let appDelegate = UIApplication.shared.delegate as? AppDelegate
-        switch index {
-        case 0: appDelegate?.showSearch()
-        case 1: appDelegate?.showHome()
-        case 2: appDelegate?.showChannels()
-        case 3: appDelegate?.showHelp()
-        case 4: appDelegate?.showSettings()
-        default: break
-        }
-    }
-
     private func setupOfferCards() {
         // One week
-        weekCard.cardTitleLabel.text = "One week"
+        weekCard.cardTitleLabel.text = NSLocalizedString("subscription.offer.week", comment: "")
         weekCard.cardPriceLabel.text = "$4.99"
-        weekCard.cardSubPriceLabel.text = "$5/Month"
+        weekCard.cardSubPriceLabel.text = "$5" + NSLocalizedString("subscription.offer.monthPrice", comment: "")
         view.addSubview(weekCard)
         
         // One Year (Popular)
-        yearPopularCard.cardTitleLabel.text = "One Year"
-        yearPopularCard.cardPriceLabel.text = "$89.99/Year"
-        yearPopularCard.cardSubPriceLabel.text = "$2.92/Month"
-        yearPopularCard.cardExtraLabel.text = "3 Days for free"
+        yearPopularCard.cardTitleLabel.text = NSLocalizedString("subscription.offer.year", comment: "")
+        yearPopularCard.cardPriceLabel.text = "$89.99" + NSLocalizedString("subscription.offer.yearPrice", comment: "")
+        yearPopularCard.cardSubPriceLabel.text = "$2.92" + NSLocalizedString("subscription.offer.monthPrice", comment: "")
+        yearPopularCard.cardExtraLabel.text = NSLocalizedString("subscription.offer.freeTrial", comment: "")
         yearPopularCard.isPopular = true
         view.addSubview(yearPopularCard)
         
@@ -230,7 +214,7 @@ final class SubscriptionViewController: UIViewController {
             view.addSubview($0)
         }
         
-        popularLabel.text = "MOST POPULAR"
+        popularLabel.text = NSLocalizedString("subscription.offer.mostPopular", comment: "")
         discountLabel.text = "-42%"
         [popularLabel, discountLabel].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
@@ -241,15 +225,15 @@ final class SubscriptionViewController: UIViewController {
         }
 
         // Welcome offer
-        welcomeCard.cardTitleLabel.text = "Welcome offer"
-        welcomeCard.cardPriceLabel.text = "$24.99/Year"
-        welcomeCard.cardSubPriceLabel.text = "$2.92/Month"
-        welcomeCard.cardExtraLabel.text = "One year"
+        welcomeCard.cardTitleLabel.text = NSLocalizedString("subscription.offer.welcome", comment: "")
+        welcomeCard.cardPriceLabel.text = "$24.99" + NSLocalizedString("subscription.offer.yearPrice", comment: "")
+        welcomeCard.cardSubPriceLabel.text = "$2.92" + NSLocalizedString("subscription.offer.monthPrice", comment: "")
+        welcomeCard.cardExtraLabel.text = NSLocalizedString("subscription.offer.year", comment: "")
         view.addSubview(welcomeCard)
         
         // Free Access
-        freeCard.cardTitleLabel.text = "Free Access"
-        freeCard.cardExtraLabel.text = "Try out the app and watch 3 videos for free!"
+        freeCard.cardTitleLabel.text = NSLocalizedString("subscription.freeAccess.title", comment: "")
+        updateFreeCardLabel()
         view.addSubview(freeCard)
 
         NSLayoutConstraint.activate([
@@ -265,13 +249,13 @@ final class SubscriptionViewController: UIViewController {
             
             popularBadge.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 128.88),
             popularBadge.topAnchor.constraint(equalTo: view.topAnchor, constant: 340.76),
-            popularBadge.widthAnchor.constraint(equalToConstant: 218.13),
+            popularBadge.widthAnchor.constraint(equalToConstant: 250), // Increased for Russian
             popularBadge.heightAnchor.constraint(equalToConstant: 39.51),
             
             popularLabel.centerXAnchor.constraint(equalTo: popularBadge.centerXAnchor),
             popularLabel.centerYAnchor.constraint(equalTo: popularBadge.centerYAnchor),
             
-            discountBadge.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 368.6),
+            discountBadge.leadingAnchor.constraint(equalTo: popularBadge.trailingAnchor, constant: 20),
             discountBadge.topAnchor.constraint(equalTo: view.topAnchor, constant: 340.76),
             discountBadge.widthAnchor.constraint(equalToConstant: 97.19),
             discountBadge.heightAnchor.constraint(equalToConstant: 39.51),
@@ -295,17 +279,27 @@ final class SubscriptionViewController: UIViewController {
         }
     }
 
+    private func updateFreeCardLabel() {
+        if SubscriptionStore.isFreeAccessActive {
+            freeCard.cardExtraLabel.text = String(format: NSLocalizedString("subscription.freeAccess.remaining", comment: ""), SubscriptionStore.freeVideosRemaining)
+        } else {
+            freeCard.cardExtraLabel.text = NSLocalizedString("subscription.freeAccess.description", comment: "")
+        }
+    }
+
     private func setupRightSideContent() {
-        rightTitleLabel.text = "Unlock the full big‑screen experience"
+        rightTitleLabel.text = NSLocalizedString("subscription.right.title", comment: "")
         rightTitleLabel.font = .systemFont(ofSize: 36, weight: .bold)
+        rightTitleLabel.numberOfLines = 0
         
-        rightDescriptionLabel.text = "Start your free trial and make sure it’s for you. Watch up to 3 videos free, then continue with unlimited playback and easy access to your Telegram chat videos on Apple TV."
+        rightDescriptionLabel.text = NSLocalizedString("subscription.freeAccess.rightDescription", comment: "")
         rightDescriptionLabel.font = .systemFont(ofSize: 25, weight: .bold)
         rightDescriptionLabel.textColor = UIColor(white: 1, alpha: 0.5)
         rightDescriptionLabel.numberOfLines = 0
         
-        rightSubtitleLabel.text = "Try it now—your best moments deserve the big screen."
+        rightSubtitleLabel.text = NSLocalizedString("subscription.right.subtitle", comment: "")
         rightSubtitleLabel.font = .systemFont(ofSize: 25, weight: .bold)
+        rightSubtitleLabel.numberOfLines = 0
         
         [rightTitleLabel, rightSubtitleLabel, rightDescriptionLabel].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
@@ -314,53 +308,184 @@ final class SubscriptionViewController: UIViewController {
         }
         
         NSLayoutConstraint.activate([
-            rightTitleLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 903),
+            rightTitleLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 880),
             rightTitleLabel.topAnchor.constraint(equalTo: view.topAnchor, constant: 159),
-            rightTitleLabel.widthAnchor.constraint(equalToConstant: 751),
+            rightTitleLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -90),
             
-            rightDescriptionLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 903),
-            rightDescriptionLabel.topAnchor.constraint(equalTo: view.topAnchor, constant: 232),
-            rightDescriptionLabel.widthAnchor.constraint(equalToConstant: 916),
+            rightDescriptionLabel.leadingAnchor.constraint(equalTo: rightTitleLabel.leadingAnchor),
+            rightDescriptionLabel.topAnchor.constraint(equalTo: rightTitleLabel.bottomAnchor, constant: 24),
+            rightDescriptionLabel.trailingAnchor.constraint(equalTo: rightTitleLabel.trailingAnchor),
             
-            rightSubtitleLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 903),
-            rightSubtitleLabel.topAnchor.constraint(equalTo: view.topAnchor, constant: 341),
-            rightSubtitleLabel.widthAnchor.constraint(equalToConstant: 640)
+            rightSubtitleLabel.leadingAnchor.constraint(equalTo: rightTitleLabel.leadingAnchor),
+            rightSubtitleLabel.topAnchor.constraint(equalTo: rightDescriptionLabel.bottomAnchor, constant: 32),
+            rightSubtitleLabel.trailingAnchor.constraint(equalTo: rightTitleLabel.trailingAnchor)
         ])
     }
 
     @objc private func offerTapped(_ sender: SubscriptionOfferCard) {
-        SubscriptionStore.isSubscribed = true
-        if presentingViewController != nil {
-            dismiss(animated: true)
-        } else {
-            navigationController?.popViewController(animated: true)
-        }
-    }
-
-    private func currentFocusedView() -> UIView? {
-        if let scene = view.window?.windowScene {
-            return scene.focusSystem?.focusedItem as? UIView
-        }
-        return UIFocusSystem.focusSystem(for: view)?.focusedItem as? UIView
-    }
-
-    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
-        let isMenuPress = presses.contains(where: { $0.type == .menu || $0.key?.keyCode == .keyboardEscape })
-        if isMenuPress, let topMenu, let focused = currentFocusedView(), !focused.isDescendant(of: topMenu) {
-            pendingMenuFocus = true
-            setNeedsFocusUpdate()
-            updateFocusIfNeeded()
+        if sender == freeCard {
+            // Free Access: включаем триал и переходим на главный экран.
+            // (Если ранее подписка могла быть выставлена "по клику", сбрасываем её.)
+            SubscriptionStore.isSubscribed = false
+            SubscriptionStore.isFreeAccessActive = true
+            finishSubscriptionFlow()
             return
         }
-        super.pressesBegan(presses, with: event)
+
+        // Платные опции: показываем окно оплаты и только после подтверждения включаем подписку.
+        presentPaymentAlert(for: sender)
+    }
+
+    private func presentPaymentAlert(for offer: SubscriptionOfferCard) {
+        guard presentedViewController == nil else { return }
+
+        let offerTitle = offer.cardTitleLabel.text?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let offerPrice = offer.cardPriceLabel.text?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let title = NSLocalizedString("subscription.title", comment: "")
+
+        var messageParts: [String] = []
+        if let offerTitle, !offerTitle.isEmpty { messageParts.append(offerTitle) }
+        if let offerPrice, !offerPrice.isEmpty { messageParts.append(offerPrice) }
+        let message = messageParts.isEmpty ? nil : messageParts.joined(separator: "\n")
+
+        let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: NSLocalizedString("button.back", comment: ""), style: .cancel))
+        alert.addAction(UIAlertAction(title: NSLocalizedString("subscription.button.subscribe", comment: ""), style: .default) { [weak self] _ in
+            SubscriptionStore.isFreeAccessActive = false
+            SubscriptionStore.isSubscribed = true
+            self?.finishSubscriptionFlow()
+        })
+        present(alert, animated: true)
+    }
+
+    private func finishSubscriptionFlow() {
+        if presentingViewController != nil {
+            dismiss(animated: true)
+            return
+        }
+        if let nav = navigationController {
+            nav.popViewController(animated: true)
+            return
+        }
+        // Фолбэк (на случай экзотических сценариев без nav/present).
+        (UIApplication.shared.delegate as? AppDelegate)?.showHome()
+    }
+}
+
+private enum KeychainKV {
+    private static let service = Bundle.main.bundleIdentifier ?? "TGtv"
+
+    static func string(forKey key: String) -> String? {
+        var query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: key,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+            kSecReturnData as String: true
+        ]
+
+        // На некоторых сборках tvOS полезно явно запретить UI-подтверждения.
+        query[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUIFail
+
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        guard status == errSecSuccess, let data = item as? Data else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    static func setString(_ value: String, forKey key: String) {
+        let data = Data(value.utf8)
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: key
+        ]
+
+        let attributes: [String: Any] = [
+            kSecValueData as String: data
+        ]
+
+        let status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        if status == errSecItemNotFound {
+            var addQuery = query
+            addQuery[kSecValueData as String] = data
+            _ = SecItemAdd(addQuery as CFDictionary, nil)
+        }
     }
 }
 
 enum SubscriptionStore {
-    private static let key = "tgtv.subscription.active"
+    private static let subKey = "tgtv.subscription.active"
+    private static let freeAccessKey = "tgtv.free_access.active"
+    private static let freeViewsKey = "tgtv.free_views.remaining"
+
+    /// “Выбрана подписка” = либо оплачено, либо выбран бесплатный доступ (даже если лимит просмотров уже исчерпан).
+    static var hasChosenPlan: Bool {
+        isSubscribed || isFreeAccessActive
+    }
 
     static var isSubscribed: Bool {
-        get { UserDefaults.standard.bool(forKey: key) }
-        set { UserDefaults.standard.set(newValue, forKey: key) }
+        get {
+            if let value = KeychainKV.string(forKey: subKey) {
+                return value == "1"
+            }
+            if UserDefaults.standard.object(forKey: subKey) != nil {
+                let value = UserDefaults.standard.bool(forKey: subKey)
+                KeychainKV.setString(value ? "1" : "0", forKey: subKey)
+                return value
+            }
+            return false
+        }
+        set {
+            KeychainKV.setString(newValue ? "1" : "0", forKey: subKey)
+            UserDefaults.standard.set(newValue, forKey: subKey)
+        }
+    }
+
+    static var isFreeAccessActive: Bool {
+        get {
+            if let value = KeychainKV.string(forKey: freeAccessKey) {
+                return value == "1"
+            }
+            if UserDefaults.standard.object(forKey: freeAccessKey) != nil {
+                let value = UserDefaults.standard.bool(forKey: freeAccessKey)
+                KeychainKV.setString(value ? "1" : "0", forKey: freeAccessKey)
+                return value
+            }
+            return false
+        }
+        set {
+            KeychainKV.setString(newValue ? "1" : "0", forKey: freeAccessKey)
+            UserDefaults.standard.set(newValue, forKey: freeAccessKey)
+        }
+    }
+
+    static var freeVideosRemaining: Int {
+        get {
+            if let value = KeychainKV.string(forKey: freeViewsKey), let intValue = Int(value) {
+                return intValue
+            }
+            if UserDefaults.standard.object(forKey: freeViewsKey) != nil {
+                let value = UserDefaults.standard.integer(forKey: freeViewsKey)
+                KeychainKV.setString("\(value)", forKey: freeViewsKey)
+                return value
+            }
+            return 3
+        }
+        set {
+            KeychainKV.setString("\(newValue)", forKey: freeViewsKey)
+            UserDefaults.standard.set(newValue, forKey: freeViewsKey)
+        }
+    }
+
+    static var canWatchVideo: Bool {
+        if isSubscribed { return true }
+        if isFreeAccessActive && freeVideosRemaining > 0 { return true }
+        return false
+    }
+
+    static func didWatchVideo() {
+        guard !isSubscribed && isFreeAccessActive else { return }
+        freeVideosRemaining = max(0, freeVideosRemaining - 1)
     }
 }

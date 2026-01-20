@@ -1303,12 +1303,15 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 
     @MainActor
     private func presentSubscriptionIfNeeded() {
-        guard !SubscriptionStore.isSubscribed else { return }
+        // После логина показываем подписку только если пользователь ЕЩЁ не делал выбор (free/paid).
+        // Если free-триал закончился — подписку покажем уже при попытке посмотреть видео.
+        if SubscriptionStore.hasChosenPlan { return }
+        
         guard let top = topViewController() else { return }
         if top is SubscriptionViewController { return }
         if top.presentedViewController is SubscriptionViewController { return }
 
-        let vc = SubscriptionViewController()
+        let vc = SubscriptionViewController(isMandatory: true)
         vc.modalPresentationStyle = .fullScreen
         top.present(vc, animated: true)
     }

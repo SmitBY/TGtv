@@ -1,8 +1,8 @@
 {
   "images" : [
     {
-      "filename" : "background.png",
-      "idiom" : "tv"
+      "filename" : "Background Image.png",
+      "idiom" : "universal"
     }
   ],
   "info" : {
