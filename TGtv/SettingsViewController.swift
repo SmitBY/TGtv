@@ -4,9 +4,12 @@ final class SettingsViewController: UIViewController {
     private var topMenu: TopMenuView?
     private let headerContainer = UIView()
     private var focusGuideToMenu: UIFocusGuide?
+    private var pendingMenuFocus = false
     
     private let logoutButton = UIButton(type: .system)
     private let clearCacheButton = UIButton(type: .system)
+    private let subscriptionButton = UIButton(type: .system)
+    private let languageButton = UIButton(type: .system)
     private let cacheLabel = UILabel()
     
     private let normalBackground = UIColor.systemGray.withAlphaComponent(0.2)
@@ -16,10 +19,32 @@ final class SettingsViewController: UIViewController {
     private var updateTimer: Timer?
     
     override var preferredFocusEnvironments: [UIFocusEnvironment] {
+        if pendingMenuFocus, let menu = topMenu, let target = menu.currentFocusTarget() {
+            pendingMenuFocus = false
+            return [target]
+        }
         if let menu = topMenu, let target = menu.currentFocusTarget() {
             return [target]
         }
         return super.preferredFocusEnvironments
+    }
+
+    private func currentFocusedView() -> UIView? {
+        if let scene = view.window?.windowScene {
+            return scene.focusSystem?.focusedItem as? UIView
+        }
+        return UIFocusSystem.focusSystem(for: view)?.focusedItem as? UIView
+    }
+
+    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        let isMenuPress = presses.contains(where: { $0.type == .menu || $0.key?.keyCode == .keyboardEscape })
+        if isMenuPress, let topMenu, let focused = currentFocusedView(), !focused.isDescendant(of: topMenu) {
+            pendingMenuFocus = true
+            setNeedsFocusUpdate()
+            updateFocusIfNeeded()
+            return
+        }
+        super.pressesBegan(presses, with: event)
     }
 
     override func viewDidLoad() {
@@ -52,7 +77,7 @@ final class SettingsViewController: UIViewController {
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         navigationController?.setNavigationBarHidden(true, animated: false)
-        topMenu?.setCurrentIndex(2) // Синхронизируем вкладку
+        topMenu?.setCurrentIndex(4) // Синхронизируем вкладку
         updateStats()
     }
     
@@ -77,7 +102,10 @@ final class SettingsViewController: UIViewController {
     }
     
     private func updateStats() {
-        cacheLabel.text = "Кэш и загруженные файлы: \(getCacheSize())"
+        cacheLabel.text = String(
+            format: NSLocalizedString("settings.cachePrefix", comment: ""),
+            getCacheSize()
+        )
     }
     
     private func getCacheSize() -> String {
@@ -124,7 +152,14 @@ final class SettingsViewController: UIViewController {
     }
     
     private func setupTopMenuBar() {
-        let menu = TopMenuView(items: ["Главная", "Каналы", "Настройки"], selectedIndex: 2)
+        let items = [
+            NSLocalizedString("tab.search", comment: ""),
+            NSLocalizedString("tab.home", comment: ""),
+            NSLocalizedString("tab.channels", comment: ""),
+            NSLocalizedString("tab.help", comment: ""),
+            NSLocalizedString("tab.settings", comment: "")
+        ]
+        let menu = TopMenuView(items: items, selectedIndex: 4)
         menu.translatesAutoresizingMaskIntoConstraints = false
         menu.onTabSelected = { [weak self] index in
             self?.handleTabSelection(index)
@@ -144,9 +179,13 @@ final class SettingsViewController: UIViewController {
         let appDelegate = UIApplication.shared.delegate as? AppDelegate
         switch index {
         case 0:
-            appDelegate?.showHome()
+            appDelegate?.showSearch()
         case 1:
+            appDelegate?.showHome()
+        case 2:
             appDelegate?.showChannels()
+        case 3:
+            appDelegate?.showHelp()
         default:
             break
         }
@@ -170,9 +209,19 @@ final class SettingsViewController: UIViewController {
         cacheLabel.font = .systemFont(ofSize: 32, weight: .medium)
         cacheLabel.textColor = .white
         stackView.addArrangedSubview(cacheLabel)
+
+        // Subscription
+        setupButton(subscriptionButton, title: NSLocalizedString("settings.subscription", comment: ""), color: normalBackground)
+        subscriptionButton.addTarget(self, action: #selector(subscriptionTapped), for: .primaryActionTriggered)
+        stackView.addArrangedSubview(subscriptionButton)
+
+        // Language
+        setupButton(languageButton, title: NSLocalizedString("settings.language", comment: ""), color: normalBackground)
+        languageButton.addTarget(self, action: #selector(languageTapped), for: .primaryActionTriggered)
+        stackView.addArrangedSubview(languageButton)
         
         // Clear Cache Button
-        setupButton(clearCacheButton, title: "Очистить все файлы", color: normalBackground)
+        setupButton(clearCacheButton, title: NSLocalizedString("settings.clearFiles", comment: ""), color: normalBackground)
         clearCacheButton.addTarget(self, action: #selector(clearCacheTapped), for: .primaryActionTriggered)
         stackView.addArrangedSubview(clearCacheButton)
         
@@ -183,11 +232,15 @@ final class SettingsViewController: UIViewController {
         stackView.addArrangedSubview(spacer)
         
         // Logout Button
-        setupButton(logoutButton, title: "Выйти из аккаунта", color: logoutNormalBackground)
+        setupButton(logoutButton, title: NSLocalizedString("settings.logout", comment: ""), color: logoutNormalBackground)
         logoutButton.addTarget(self, action: #selector(logoutTapped), for: .primaryActionTriggered)
         stackView.addArrangedSubview(logoutButton)
         
         NSLayoutConstraint.activate([
+            subscriptionButton.widthAnchor.constraint(equalToConstant: 500),
+            subscriptionButton.heightAnchor.constraint(equalToConstant: 80),
+            languageButton.widthAnchor.constraint(equalToConstant: 500),
+            languageButton.heightAnchor.constraint(equalToConstant: 80),
             clearCacheButton.widthAnchor.constraint(equalToConstant: 500),
             clearCacheButton.heightAnchor.constraint(equalToConstant: 80),
             logoutButton.widthAnchor.constraint(equalToConstant: 500),
@@ -251,9 +304,61 @@ final class SettingsViewController: UIViewController {
         }
         updateStats()
     }
+
+    @objc private func subscriptionTapped() {
+        (UIApplication.shared.delegate as? AppDelegate)?.showSubscription()
+    }
     
     @objc private func logoutTapped() {
         (UIApplication.shared.delegate as? AppDelegate)?.logoutFromMenu()
+    }
+
+    @objc private func languageTapped() {
+        let alert = UIAlertController(
+            title: NSLocalizedString("settings.languageSelectionTitle", comment: ""),
+            message: nil,
+            preferredStyle: .actionSheet
+        )
+        
+        let languages = [
+            ("English", "en"),
+            ("Русский", "ru"),
+            ("中文 (简体)", "zh-Hans"),
+            ("Español", "es"),
+            ("Deutsch", "de"),
+            ("Français", "fr"),
+            ("日本語", "ja"),
+            ("한국어", "ko"),
+            ("Português (Brasil)", "pt-BR"),
+            ("Ελληνικά", "el"),
+            ("Italiano", "it"),
+            ("Türkçe", "tr"),
+            ("Українська", "uk"),
+            ("Polski", "pl"),
+            ("עברית", "he")
+        ]
+        
+        for (name, code) in languages {
+            alert.addAction(UIAlertAction(title: name, style: .default) { _ in
+                UserDefaults.standard.set([code], forKey: "AppleLanguages")
+                UserDefaults.standard.synchronize()
+                
+                // Показываем подтверждение о перезагрузке
+                let restartAlert = UIAlertController(
+                    title: NSLocalizedString("settings.restartTitle", comment: ""),
+                    message: NSLocalizedString("settings.restartMessage", comment: ""),
+                    preferredStyle: .alert
+                )
+                restartAlert.addAction(UIAlertAction(title: "OK", style: .default) { _ in
+                    exit(0) // На tvOS/iOS это грубый способ, но самый надежный для смены языка AppleLanguages
+                })
+                self.present(restartAlert, animated: true)
+            })
+        }
+        
+        alert.addAction(UIAlertAction(title: NSLocalizedString("button.back", comment: ""), style: .cancel))
+        
+        present(alert, animated: true)
     }
 
     override func didUpdateFocus(in context: UIFocusUpdateContext, with coordinator: UIFocusAnimationCoordinator) {
@@ -269,11 +374,17 @@ final class SettingsViewController: UIViewController {
         
         coordinator.addCoordinatedAnimations { [weak self] in
             guard let self else { return }
-            
-            self.clearCacheButton.backgroundColor = (context.nextFocusedView === self.clearCacheButton) ? 
+
+            self.subscriptionButton.backgroundColor = (context.nextFocusedView === self.subscriptionButton) ?
                 self.focusedBackground : self.normalBackground
-                
-            self.logoutButton.backgroundColor = (context.nextFocusedView === self.logoutButton) ? 
+
+            self.languageButton.backgroundColor = (context.nextFocusedView === self.languageButton) ?
+                self.focusedBackground : self.normalBackground
+
+            self.clearCacheButton.backgroundColor = (context.nextFocusedView === self.clearCacheButton) ?
+                self.focusedBackground : self.normalBackground
+
+            self.logoutButton.backgroundColor = (context.nextFocusedView === self.logoutButton) ?
                 self.focusedBackground : self.logoutNormalBackground
         }
     }

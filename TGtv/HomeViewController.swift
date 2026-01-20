@@ -28,6 +28,7 @@ final class HomeViewController: UIViewController, AVPlayerViewControllerDelegate
     private let headerContainer = UIView()
     private var headerTopConstraint: NSLayoutConstraint?
     private var focusGuideCollectionToHeader: UIFocusGuide?
+    private var pendingMenuFocus = false
     
     // Полноэкранный оверлей загрузки
     private var fullscreenLoadingView: UIView?
@@ -62,6 +63,10 @@ final class HomeViewController: UIViewController, AVPlayerViewControllerDelegate
     }
     
     override var preferredFocusEnvironments: [UIFocusEnvironment] {
+        if pendingMenuFocus, let menu = topMenu, let target = menu.currentFocusTarget() {
+            pendingMenuFocus = false
+            return [target]
+        }
         // Если у нас есть сохраненный индекс (например, после просмотра видео),
         // приоритет отдаем коллекции, чтобы фокус вернулся на карточку.
         if let cv = collectionView, lastSelectedIndexPath != nil {
@@ -71,6 +76,13 @@ final class HomeViewController: UIViewController, AVPlayerViewControllerDelegate
             return [target]
         }
         return super.preferredFocusEnvironments
+    }
+
+    private func currentFocusedView() -> UIView? {
+        if let scene = view.window?.windowScene {
+            return scene.focusSystem?.focusedItem as? UIView
+        }
+        return UIFocusSystem.focusSystem(for: view)?.focusedItem as? UIView
     }
 
     override func viewDidLoad() {
@@ -170,7 +182,7 @@ final class HomeViewController: UIViewController, AVPlayerViewControllerDelegate
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         navigationController?.setNavigationBarHidden(true, animated: false)
-        topMenu?.setCurrentIndex(0) // Синхронизируем вкладку
+        topMenu?.setCurrentIndex(1) // Синхронизируем вкладку
         Task { @MainActor in
             await reloadData()
             
@@ -229,7 +241,14 @@ final class HomeViewController: UIViewController, AVPlayerViewControllerDelegate
     }
 
     private func setupTopMenuBar() {
-        let menu = TopMenuView(items: ["Главная", "Каналы", "Настройки"], selectedIndex: 0)
+        let items = [
+            NSLocalizedString("tab.search", comment: ""),
+            NSLocalizedString("tab.home", comment: ""),
+            NSLocalizedString("tab.channels", comment: ""),
+            NSLocalizedString("tab.help", comment: ""),
+            NSLocalizedString("tab.settings", comment: "")
+        ]
+        let menu = TopMenuView(items: items, selectedIndex: 1)
         menu.translatesAutoresizingMaskIntoConstraints = false
         menu.onTabSelected = { [weak self] index in
             self?.handleTabSelection(index)
@@ -250,9 +269,13 @@ final class HomeViewController: UIViewController, AVPlayerViewControllerDelegate
         let appDelegate = UIApplication.shared.delegate as? AppDelegate
         
         switch index {
-        case 1:
-            appDelegate?.showChannels()
+        case 0:
+            appDelegate?.showSearch()
         case 2:
+            appDelegate?.showChannels()
+        case 3:
+            appDelegate?.showHelp()
+        case 4:
             appDelegate?.showSettings()
         default:
             break
@@ -311,7 +334,7 @@ final class HomeViewController: UIViewController, AVPlayerViewControllerDelegate
         emptyLabel.font = .systemFont(ofSize: 32, weight: .semibold)
         emptyLabel.textAlignment = .center
         emptyLabel.numberOfLines = 0
-        emptyLabel.text = "Выберите чаты на экране списка чатов"
+        emptyLabel.text = NSLocalizedString("home.emptySelectChats", comment: "")
         view.addSubview(emptyLabel)
         
         NSLayoutConstraint.activate([
@@ -370,7 +393,7 @@ final class HomeViewController: UIViewController, AVPlayerViewControllerDelegate
                 snapshot.appendItems(
                     [HomeVideoItem(
                         id: section.chatId,
-                        title: "Нет видео",
+                        title: NSLocalizedString("video.none", comment: ""),
                         chatId: section.chatId,
                         thumbnailPath: nil,
                         minithumbnailData: nil,
@@ -464,9 +487,16 @@ final class HomeViewController: UIViewController, AVPlayerViewControllerDelegate
     }
 
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        let isMenuPress = presses.contains(where: { $0.type == .menu || $0.key?.keyCode == .keyboardEscape })
         // На экране загрузки перехватываем Esc/Menu, чтобы закрыть оверлей и остаться на главном экране
-        if isFullscreenLoadingVisible, presses.contains(where: { $0.type == .menu || $0.key?.keyCode == .keyboardEscape }) {
+        if isFullscreenLoadingVisible, isMenuPress {
             cancelLoadingOverlay()
+            return
+        }
+        if isMenuPress, let topMenu, let focused = currentFocusedView(), !focused.isDescendant(of: topMenu) {
+            pendingMenuFocus = true
+            setNeedsFocusUpdate()
+            updateFocusIfNeeded()
             return
         }
         super.pressesBegan(presses, with: event)
@@ -612,7 +642,7 @@ final class VideoCell: UICollectionViewCell {
         backgroundCard.addSubview(innerStrokeView)
         
         placeholderLabel.translatesAutoresizingMaskIntoConstraints = false
-        placeholderLabel.text = "Нет превью"
+        placeholderLabel.text = NSLocalizedString("video.noPreview", comment: "")
         placeholderLabel.textColor = UIColor(white: 1, alpha: 0.6)
         placeholderLabel.font = .systemFont(ofSize: 16, weight: .medium)
         placeholderLabel.textAlignment = .center
@@ -767,7 +797,7 @@ extension HomeViewController: UICollectionViewDelegate {
         backgroundDownloadTask = nil
         loadingOverlayMessage = nil
         setLoading(true)
-        showFullscreenLoading(progress: nil, message: "Подготовка…")
+        showFullscreenLoading(progress: nil, message: NSLocalizedString("player.preparing", comment: ""))
         progressWatchTask?.cancel()
         
         progressWatchTask = Task { @MainActor [weak self] in
@@ -782,7 +812,7 @@ extension HomeViewController: UICollectionViewDelegate {
                 if info != nil { break }
                 // каждые ~5 секунд обновляем текст, чтобы было понятно что идёт ожидание
                 if attempts % 10 == 0 {
-                    self.showFullscreenLoading(progress: nil, message: "Подготовка…")
+                    self.showFullscreenLoading(progress: nil, message: NSLocalizedString("player.preparing", comment: ""))
                 }
                 try? await Task.sleep(nanoseconds: 500_000_000)
             }
@@ -795,7 +825,7 @@ extension HomeViewController: UICollectionViewDelegate {
             let minPrefixForStreaming: Int64 = 2_000_000
             if !info.isDownloadingCompleted, info.downloadedSize < minPrefixForStreaming {
                 let progress = info.expectedSize > 0 ? Double(info.downloadedSize) / Double(info.expectedSize) : 0
-                self.showFullscreenLoading(progress: progress, message: "Подготовка потокового воспроизведения…")
+                self.showFullscreenLoading(progress: progress, message: NSLocalizedString("player.preparingStream", comment: ""))
                 Task.detached { [client = self.viewModel.client] in
                     _ = try? await client.downloadFile(
                         fileId: info.fileId,
@@ -811,6 +841,13 @@ extension HomeViewController: UICollectionViewDelegate {
             
             await self.startPlayback(with: info, fallbackItem: item, selectionId: selectionId)
         }
+    }
+
+    // MARK: External playback entry point (used by Search screen)
+    func playVideoFromExternal(_ item: HomeVideoItem) {
+        loadViewIfNeeded()
+        topMenu?.setCurrentIndex(1)
+        playVideo(item)
     }
 
     private func pollPrefixAndPlay(item: HomeVideoItem, selectionId: String, minPrefixBytes: Int64) async {
@@ -843,7 +880,10 @@ extension HomeViewController: UICollectionViewDelegate {
             self.setLoading(false)
             self.hideFullscreenLoading()
             print("[stream] prefix timeout for fileId=\(item.videoFileId)")
-            self.showAlert(title: "Не удалось начать воспроизведение", message: "Не удалось получить данные для потокового воспроизведения (префикс не загрузился). Проверьте сеть и попробуйте ещё раз.")
+            self.showAlert(
+                title: NSLocalizedString("player.error.unableStartTitle", comment: ""),
+                message: NSLocalizedString("player.error.prefixTimeout", comment: "")
+            )
         }
     }
 
@@ -881,7 +921,10 @@ extension HomeViewController: UICollectionViewDelegate {
         guard !info.path.isEmpty else {
             self.setLoading(false)
             self.hideFullscreenLoading()
-            self.showAlert(title: "Ошибка", message: "Нет локального пути к файлу видео.")
+            self.showAlert(
+                title: NSLocalizedString("alert.errorTitle", comment: ""),
+                message: NSLocalizedString("player.error.noLocalPath", comment: "")
+            )
             return
         }
 
@@ -901,7 +944,10 @@ extension HomeViewController: UICollectionViewDelegate {
             self.setLoading(false)
             self.hideFullscreenLoading()
             print("[stream] local file unavailable fileId=\(info.fileId) path=\(info.path)")
-            self.showAlert(title: "Ошибка", message: "Локальный файл недоступен.")
+            self.showAlert(
+                title: NSLocalizedString("alert.errorTitle", comment: ""),
+                message: NSLocalizedString("player.error.localUnavailable", comment: "")
+            )
             return
         }
         
@@ -926,13 +972,13 @@ extension HomeViewController: UICollectionViewDelegate {
                 selectionId: selectionId,
                 maxPrefixBytes: maxMoovWaitBytes,
                 timeoutSeconds: 180,
-                message: "Подготовка потокового воспроизведения…"
+                message: NSLocalizedString("player.preparingStream", comment: "")
             ) {
                 info = result.info
                 if !result.streamable {
                     self.showFullscreenLoading(
                         progress: info.expectedSize > 0 ? Double(info.downloadedSize) / Double(info.expectedSize) : nil,
-                        message: "Это видео не поддерживает потоковое воспроизведение. Идёт загрузка..."
+                        message: NSLocalizedString("player.streamingNotSupportedDownloading", comment: "")
                     )
                     backgroundDownloadTask?.cancel()
                     backgroundDownloadTask = Task { [weak self] in
@@ -944,7 +990,7 @@ extension HomeViewController: UICollectionViewDelegate {
                                 await MainActor.run {
                                     self.showFullscreenLoading(
                                         progress: progress,
-                                        message: "Это видео не поддерживает потоковое воспроизведение. Идёт загрузка..."
+                                        message: NSLocalizedString("player.streamingNotSupportedDownloading", comment: "")
                                     )
                                 }
                             }
@@ -966,7 +1012,7 @@ extension HomeViewController: UICollectionViewDelegate {
                             mimeType: info.mimeType
                         )
                         await MainActor.run {
-                            self.showFullscreenLoading(progress: 1, message: "Загрузка завершена. Запуск плеера...")
+                            self.showFullscreenLoading(progress: 1, message: NSLocalizedString("player.downloadCompleteStarting", comment: ""))
                         }
                         await self.startPlayback(with: updatedInfo, fallbackItem: fallbackItem, selectionId: selectionId)
                     }
@@ -983,7 +1029,10 @@ extension HomeViewController: UICollectionViewDelegate {
         guard let playerItem = coordinator.makePlayerItem() else {
             self.setLoading(false)
             self.hideFullscreenLoading()
-            self.showAlert(title: "Ошибка", message: "Не удалось подготовить потоковое воспроизведение.")
+            self.showAlert(
+                title: NSLocalizedString("alert.errorTitle", comment: ""),
+                message: NSLocalizedString("player.error.prepareStreamFailed", comment: "")
+            )
             print("[stream] makePlayerItem failed fileId=\(info.fileId) downloaded=\(info.downloadedSize) expected=\(info.expectedSize) completed=\(info.isDownloadingCompleted)")
             return
         }
@@ -1099,7 +1148,7 @@ extension HomeViewController: UICollectionViewDelegate {
         // Если уже что-то показано (алерт/плеер) — не показываем, чтобы избежать гонок
         guard presentedViewController == nil else { return }
         let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        alert.addAction(UIAlertAction(title: NSLocalizedString("button.ok", comment: ""), style: .default))
         present(alert, animated: true)
     }
     
@@ -1157,7 +1206,7 @@ extension HomeViewController: UICollectionViewDelegate {
 
             let cancelButton = UIButton(type: .system)
             cancelButton.translatesAutoresizingMaskIntoConstraints = false
-            cancelButton.setTitle("Назад", for: .normal)
+            cancelButton.setTitle(NSLocalizedString("button.back", comment: ""), for: .normal)
             cancelButton.titleLabel?.font = .systemFont(ofSize: 22, weight: .semibold)
             cancelButton.addTarget(self, action: #selector(cancelLoadingOverlay), for: .primaryActionTriggered)
             
@@ -1204,7 +1253,7 @@ extension HomeViewController: UICollectionViewDelegate {
         let progressText: String? = {
             guard let progress else { return nil }
             let p = max(0, min(1, progress))
-            return String(format: "Загружено %.0f%%", p * 100)
+            return String(format: NSLocalizedString("player.progress.downloadedPercent", comment: ""), p * 100)
         }()
         if let msg = message, let progressText {
             label.text = "\(msg)\n\(progressText)"
@@ -1213,7 +1262,7 @@ extension HomeViewController: UICollectionViewDelegate {
         } else if let progressText {
             label.text = progressText
         } else {
-            label.text = "Загрузка..."
+            label.text = NSLocalizedString("loading.generic", comment: "")
         }
         label.numberOfLines = 0
     }
@@ -1237,7 +1286,7 @@ extension HomeViewController: UICollectionViewDelegate {
     
     private func showDownloadProgress(_ progress: Double) {
         let percent = max(0, min(1, progress))
-        let text = String(format: "Загружено %.0f%%", percent * 100)
+        let text = String(format: NSLocalizedString("player.progress.downloadedPercent", comment: ""), percent * 100)
         playbackProgressWorkItem?.cancel()
         playbackProgressLabel.text = text
         UIView.animate(withDuration: 0.15) {
@@ -1272,7 +1321,7 @@ extension HomeViewController: UICollectionViewDelegate {
                     print("[stream] playerItem ready fileId=\(self.currentPlaybackFileId ?? -1)")
                     player?.play()
                 case .failed:
-                    let message = item.error?.localizedDescription ?? "Неизвестная ошибка воспроизведения"
+                    let message = item.error?.localizedDescription ?? NSLocalizedString("player.error.unknownPlaybackError", comment: "")
                     let err = item.error as NSError?
                 print("[stream] playerItem failed fileId=\(self.currentPlaybackFileId ?? -1) err=\(err?.domain ?? "nil") code=\(err?.code ?? 0) \(message)")
                     if self.isRecoveringPlayback || self.isStreamFailed { return }

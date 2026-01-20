@@ -31,7 +31,7 @@ final class ChatListViewModel: ObservableObject {
     @Published private(set) var searchQuery: String = ""
     @Published private(set) var error: Swift.Error?
     @Published private(set) var isLoading = false
-    @Published private(set) var loadingProgress = "Загрузка чатов..."
+    @Published private(set) var loadingProgress = NSLocalizedString("channels.loading", comment: "")
     // Флаг, указывающий были ли уже загружены чаты
     private var hasLoadedChatsOnce = false
     
@@ -167,7 +167,7 @@ final class ChatListViewModel: ObservableObject {
         
         isLoading = true
         error = nil
-        loadingProgress = "Загрузка списка чатов..."
+        loadingProgress = NSLocalizedString("channels.loadingList", comment: "")
         
         do {
             cachedChats = []
@@ -179,7 +179,10 @@ final class ChatListViewModel: ObservableObject {
             let response = try await client.getChats(chatList: .chatListMain, limit: 50)
             let chatIds = response.chatIds
             
-            loadingProgress = "Загружено \(chatIds.count) чатов"
+            loadingProgress = String(
+                format: NSLocalizedString("channels.loadedCount", comment: ""),
+                chatIds.count
+            )
             
             // Загружаем детали чатов
             for chatId in chatIds {

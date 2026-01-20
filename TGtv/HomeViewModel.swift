@@ -133,7 +133,7 @@ final class HomeViewModel: ObservableObject {
                 guard case let .messageVideo(content) = message.content else { continue }
                 
                 let caption = content.caption.text.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
-                let title = caption.isEmpty ? "Видео" : caption
+                let title = caption.isEmpty ? NSLocalizedString("video.defaultTitle", comment: "") : caption
                 let video = content.video
                 let videoFile = video.video
                 let local = videoFile.local

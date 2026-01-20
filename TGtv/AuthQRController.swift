@@ -261,7 +261,7 @@ final class AuthQRController: UIViewController {
         statusLabel.translatesAutoresizingMaskIntoConstraints = false
         statusLabel.textColor = UIColor(white: 0.7, alpha: 1)
         statusLabel.textAlignment = .center
-        statusLabel.text = "Подготовка..."
+        statusLabel.text = NSLocalizedString("auth.status.preparing", comment: "")
         statusLabel.numberOfLines = 0
         statusLabel.font = .systemFont(ofSize: 32, weight: .medium)
         view.addSubview(statusLabel)
@@ -281,7 +281,7 @@ final class AuthQRController: UIViewController {
         passwordTextField.font = .systemFont(ofSize: 28, weight: .regular)
         passwordTextField.layer.cornerRadius = 14
         passwordTextField.isSecureTextEntry = true
-        passwordTextField.placeholder = "Введите пароль"
+        passwordTextField.placeholder = NSLocalizedString("auth.password.placeholder", comment: "")
         passwordTextField.leftView = UIView(frame: CGRect(x: 0, y: 0, width: 20, height: 60))
         passwordTextField.leftViewMode = .always
         passwordTextField.rightView = UIView(frame: CGRect(x: 0, y: 0, width: 20, height: 60))
@@ -293,7 +293,7 @@ final class AuthQRController: UIViewController {
         
         loginButton = UIButton(type: .system)
         loginButton.translatesAutoresizingMaskIntoConstraints = false
-        loginButton.setTitle("Войти", for: .normal)
+        loginButton.setTitle(NSLocalizedString("auth.button.login", comment: ""), for: .normal)
         loginButton.titleLabel?.font = .systemFont(ofSize: 28, weight: .semibold)
         loginButton.backgroundColor = UIColor(red: 0.2, green: 0.5, blue: 0.95, alpha: 1)
         loginButton.setTitleColor(.white, for: .normal)
@@ -543,8 +543,11 @@ final class AuthQRController: UIViewController {
                 self.statusLabel.isHidden = false
                 
                 let hint = self.authService.passwordHint.isEmpty
-                    ? "Введите пароль от аккаунта"
-                    : "Подсказка: \(self.authService.passwordHint)"
+                    ? NSLocalizedString("auth.password.prompt", comment: "")
+                    : String(
+                        format: NSLocalizedString("auth.password.hintPrefix", comment: ""),
+                        self.authService.passwordHint
+                    )
                 self.statusLabel.text = hint
                 
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
@@ -564,7 +567,7 @@ final class AuthQRController: UIViewController {
                     self.qrContainerView.isHidden = true
                     self.passwordView.isHidden = true
                     self.statusLabel.isHidden = false
-                    self.statusLabel.text = "Авторизация успешна ✓"
+                    self.statusLabel.text = NSLocalizedString("auth.status.success", comment: "")
                     self.statusLabel.textColor = UIColor(red: 0.3, green: 0.8, blue: 0.4, alpha: 1)
                     
                     self.loadingIndicator.isHidden = false
@@ -576,7 +579,7 @@ final class AuthQRController: UIViewController {
                     }
                 } else {
                     // Сброс UI при выходе, чтобы не застревать на экране успеха
-                    self.statusLabel.text = "Подготовка..."
+                    self.statusLabel.text = NSLocalizedString("auth.status.preparing", comment: "")
                     self.statusLabel.textColor = UIColor(white: 0.7, alpha: 1)
                     self.statusLabel.isHidden = false
                     self.qrContainerView.isHidden = true
@@ -620,7 +623,7 @@ final class AuthQRController: UIViewController {
         
         let password = passwordTextField.text ?? ""
         if password.isEmpty {
-            statusLabel.text = "Введите пароль"
+            statusLabel.text = NSLocalizedString("auth.password.placeholder", comment: "")
             statusLabel.textColor = UIColor(red: 1, green: 0.4, blue: 0.4, alpha: 1)
             DebugLogger.shared.log("AuthQRController: Попытка входа с пустым паролем")
             passwordTextField.becomeFirstResponder()
@@ -633,7 +636,7 @@ final class AuthQRController: UIViewController {
         DebugLogger.shared.log("AuthQRController: Отправка пароля")
         isLoggingIn = true
         loginButton.isEnabled = false
-        loginButton.setTitle("Вход...", for: .disabled)
+        loginButton.setTitle(NSLocalizedString("auth.button.loggingIn", comment: ""), for: .disabled)
         loginButton.alpha = 0.6
         // passwordTextField.isEnabled = false // НЕ отключаем, чтобы не терять фокус на tvOS
         loadingIndicator.isHidden = false
@@ -649,14 +652,14 @@ final class AuthQRController: UIViewController {
                 if case .error(let msg) = error {
                     message = msg
                 } else {
-                    message = "Неизвестная ошибка"
+                    message = NSLocalizedString("auth.error.unknown", comment: "")
                 }
                 
                 DebugLogger.shared.log("AuthQRController: Ошибка входа: \(message)")
                 statusLabel.text = message
                 statusLabel.textColor = UIColor(red: 1, green: 0.4, blue: 0.4, alpha: 1)
                 loginButton.isEnabled = true
-                loginButton.setTitle("Войти", for: .normal)
+                loginButton.setTitle(NSLocalizedString("auth.button.login", comment: ""), for: .normal)
                 loginButton.alpha = 1
                 // passwordTextField.isEnabled = true
                 passwordTextField.text = "" 

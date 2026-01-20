@@ -2,6 +2,7 @@ import UIKit
 import TDLibKit
 import Combine
 import Foundation
+import QuartzCore
 
 extension Foundation.Notification.Name {
     static let tgFileUpdated = Foundation.Notification.Name("tg.file.updated")
@@ -1205,7 +1206,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         super.buildMenu(with: builder)
         guard builder.system == .main else { return }
         
-        let settingsAction = UIAction(title: "Настройки…") { [weak self] _ in
+        let settingsAction = UIAction(title: NSLocalizedString("menu.settingsEllipsis", comment: "")) { [weak self] _ in
             self?.showSettings()
         }
         let settingsMenu = UIMenu(title: "", options: .displayInline, children: [settingsAction])
@@ -1215,10 +1216,21 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     @objc
     func showSettings() {
         guard let nav = navigationController else { return }
-        // Если уже открыты настройки, не пушим еще раз
-        if nav.topViewController is SettingsViewController { return }
-        let settingsVC = SettingsViewController()
-        nav.pushViewController(settingsVC, animated: true)
+        // Settings — полноценная вкладка, поэтому ведём себя как showHome/showChannels (без накопления стека)
+        if let settingsVC = nav.viewControllers.first(where: { $0 is SettingsViewController }) {
+            nav.popToViewController(settingsVC, animated: true)
+        } else {
+            nav.setViewControllers([SettingsViewController()], animated: true)
+        }
+    }
+
+    func showSearch() {
+        guard let nav = navigationController, let client else { return }
+        if let searchVC = nav.viewControllers.first(where: { $0 is SearchViewController }) {
+            nav.popToViewController(searchVC, animated: true)
+        } else {
+            nav.setViewControllers([SearchViewController(client: client)], animated: true)
+        }
     }
 
     func showHome() {
@@ -1231,6 +1243,38 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         }
     }
 
+    func playVideoFromHome(_ item: HomeVideoItem) {
+        guard let nav = navigationController else { return }
+
+        let ensureAndPlay: (HomeViewController) -> Void = { home in
+            home.loadViewIfNeeded()
+            home.playVideoFromExternal(item)
+        }
+
+        if let home = nav.viewControllers.first(where: { $0 is HomeViewController }) as? HomeViewController {
+            CATransaction.begin()
+            CATransaction.setCompletionBlock { [weak home] in
+                guard let home else { return }
+                ensureAndPlay(home)
+            }
+            nav.popToViewController(home, animated: true)
+            CATransaction.commit()
+            return
+        }
+
+        guard let created = makeHomeController() as? HomeViewController else {
+            return
+        }
+
+        CATransaction.begin()
+        CATransaction.setCompletionBlock { [weak created] in
+            guard let created else { return }
+            ensureAndPlay(created)
+        }
+        nav.setViewControllers([created], animated: true)
+        CATransaction.commit()
+    }
+
     func showChannels() {
         guard let nav = navigationController, let chatListViewModel = chatListViewModel else { return }
         // Если Список уже в стеке, возвращаемся к нему
@@ -1239,6 +1283,34 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         } else {
             nav.setViewControllers([makeChatSelectionController(viewModel: chatListViewModel)], animated: true)
         }
+    }
+
+    func showHelp() {
+        guard let nav = navigationController else { return }
+        if let helpVC = nav.viewControllers.first(where: { $0 is HelpViewController }) {
+            nav.popToViewController(helpVC, animated: true)
+        } else {
+            nav.setViewControllers([HelpViewController()], animated: true)
+        }
+    }
+
+    func showSubscription() {
+        guard let nav = navigationController else { return }
+        // Subscription доступна из настроек, поэтому пушим поверх
+        if nav.topViewController is SubscriptionViewController { return }
+        nav.pushViewController(SubscriptionViewController(), animated: true)
+    }
+
+    @MainActor
+    private func presentSubscriptionIfNeeded() {
+        guard !SubscriptionStore.isSubscribed else { return }
+        guard let top = topViewController() else { return }
+        if top is SubscriptionViewController { return }
+        if top.presentedViewController is SubscriptionViewController { return }
+
+        let vc = SubscriptionViewController()
+        vc.modalPresentationStyle = .fullScreen
+        top.present(vc, animated: true)
     }
 
     func logoutFromMenu() {
@@ -1309,6 +1381,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
                 navigationController.setViewControllers([makeHomeController()], animated: true)
             } else {
                 navigationController.setViewControllers([makeChatSelectionController(viewModel: chatListViewModel!)], animated: true)
+            }
+            Task { @MainActor [weak self] in
+                self?.presentSubscriptionIfNeeded()
             }
         } else {
             navigationController.setViewControllers([authVC], animated: true)

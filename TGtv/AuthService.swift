@@ -162,9 +162,12 @@ class AuthService {
             let errorDesc = "\(error)"
             DebugLogger.shared.log("AuthService: Ошибка requestQrCodeAuthentication: \(errorDesc)")
             if errorDesc.contains("API_ID_PUBLISHED_FLOOD") {
-                authError = "Критическая ошибка: Используется заблокированный api_id. Пожалуйста, замените apiId и apiHash в коде."
+                authError = NSLocalizedString("auth.error.apiIdBlocked", comment: "")
             } else {
-                authError = "Ошибка запроса QR: \(errorDesc)"
+                authError = String(
+                    format: NSLocalizedString("auth.error.qrRequestPrefix", comment: ""),
+                    errorDesc
+                )
             }
         }
     }
@@ -177,11 +180,11 @@ class AuthService {
             let errorDesc = "\(error)"
             DebugLogger.shared.log("AuthService: Ошибка checkPassword: \(errorDesc)")
             if errorDesc.contains("PASSWORD_HASH_INVALID") {
-                return .failure(.error("Неверный пароль"))
+                return .failure(.error(NSLocalizedString("auth.error.invalidPassword", comment: "")))
             } else if errorDesc.contains("FLOOD_WAIT") {
-                return .failure(.error("Слишком много попыток. Пожалуйста, подождите."))
+                return .failure(.error(NSLocalizedString("auth.error.tooManyAttempts", comment: "")))
             }
-            return .failure(.error("Ошибка: \(errorDesc)"))
+            return .failure(.error(String(format: NSLocalizedString("channels.errorPrefix", comment: ""), errorDesc)))
         }
     }
     

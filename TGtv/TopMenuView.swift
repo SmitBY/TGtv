@@ -16,7 +16,8 @@ class TopMenuView: UIView {
         stack.axis = .horizontal
         stack.spacing = 0 
         stack.alignment = .fill
-        stack.distribution = .fillEqually
+        // Важно для локализации: ширина табов должна зависеть от текста.
+        stack.distribution = .fillProportionally
         stack.translatesAutoresizingMaskIntoConstraints = false
         return stack
     }()
@@ -49,8 +50,10 @@ class TopMenuView: UIView {
         NSLayoutConstraint.activate([
             container.centerYAnchor.constraint(equalTo: centerYAnchor),
             container.centerXAnchor.constraint(equalTo: centerXAnchor),
-            container.widthAnchor.constraint(equalToConstant: 617),
             container.heightAnchor.constraint(equalToConstant: 74),
+            // tvOS safe-area: не даём меню «упереться» в края на широких/узких локализациях.
+            container.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 80),
+            container.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -80),
             
             stackView.topAnchor.constraint(equalTo: container.topAnchor),
             stackView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
@@ -63,6 +66,9 @@ class TopMenuView: UIView {
             let button = MenuButton(title: title, isSelected: isSelected)
             button.tag = index
             button.addTarget(self, action: #selector(buttonTapped(_:)), for: .primaryActionTriggered)
+            // Даём авто-лейауту возможность «сжимать» кнопки при очень длинных строках.
+            button.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            button.setContentHuggingPriority(.defaultHigh, for: .horizontal)
             stackView.addArrangedSubview(button)
             buttons.append(button)
         }
@@ -193,12 +199,18 @@ class TopMenuView: UIView {
 class MenuButton: UIButton {
     private var isTabSelected: Bool
     private let shadowLayer = CALayer()
+    private let titleText: String
     
     init(title: String, isSelected: Bool) {
         self.isTabSelected = isSelected
+        self.titleText = title
         super.init(frame: .zero)
         
-        setTitle(title, for: .normal)
+        // Используем UIButton.Configuration для замены устаревшего contentEdgeInsets
+        var config = UIButton.Configuration.plain()
+        config.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 18, bottom: 0, trailing: 18)
+        self.configuration = config
+        
         setupStyle()
         translatesAutoresizingMaskIntoConstraints = false
         setupShadow()
@@ -210,13 +222,31 @@ class MenuButton: UIButton {
     }
     
     private func setupStyle() {
-        titleLabel?.font = .systemFont(ofSize: 29, weight: .bold) // SF Pro 29px Bold as per CSS
-        setTitleColor(isTabSelected ? .black : UIColor(red: 153/255, green: 153/255, blue: 153/255, alpha: 1.0), for: .normal)
-        backgroundColor = isTabSelected ? UIColor(red: 208/255, green: 209/255, blue: 211/255, alpha: 1.0) : .clear
-        layer.cornerRadius = 28 // Updated to match visual style, CSS says 35px for background but 28px might be better for 56px height
+        guard var config = configuration else { return }
+        
+        var container = AttributeContainer()
+        container.font = .systemFont(ofSize: 29, weight: .bold)
+        
         if isTabSelected {
-            layer.cornerRadius = 35 // To match CSS "border-radius: 35px" for background
+            container.foregroundColor = .black
+            config.background.backgroundColor = UIColor(red: 208/255, green: 209/255, blue: 211/255, alpha: 1.0)
+            config.background.cornerRadius = 35
+        } else {
+            container.foregroundColor = UIColor(red: 153/255, green: 153/255, blue: 153/255, alpha: 1.0)
+            config.background.backgroundColor = .clear
+            config.background.cornerRadius = 28
         }
+        
+        config.attributedTitle = AttributedString(titleText, attributes: container)
+        self.configuration = config
+        
+        // Дополнительные настройки для titleLabel, которые не покрываются Configuration
+        titleLabel?.numberOfLines = 1
+        titleLabel?.adjustsFontSizeToFitWidth = true
+        titleLabel?.minimumScaleFactor = 0.65
+        titleLabel?.baselineAdjustment = .alignCenters
+        
+        layer.cornerRadius = config.background.cornerRadius
     }
     
     required init?(coder: NSCoder) {
@@ -258,13 +288,19 @@ class MenuButton: UIButton {
         coordinator.addCoordinatedAnimations {
             if self.isFocused {
                 self.transform = CGAffineTransform(scaleX: 1.1, y: 1.1)
-                self.backgroundColor = .white
-                self.setTitleColor(.black, for: .normal)
+                if var config = self.configuration {
+                    config.background.backgroundColor = .white
+                    var container = AttributeContainer()
+                    container.font = .systemFont(ofSize: 29, weight: .bold)
+                    container.foregroundColor = .black
+                    config.attributedTitle = AttributedString(self.titleText, attributes: container)
+                    self.configuration = config
+                }
                 self.shadowLayer.shadowOpacity = 0.5
             } else {
                 self.transform = .identity
-                self.backgroundColor = self.isTabSelected ? .white : .clear
-                self.setTitleColor(self.isTabSelected ? .black : .white, for: .normal)
+                // Возвращаем стиль в зависимости от того, выбран ли таб
+                self.setupStyle()
                 self.shadowLayer.shadowOpacity = self.isTabSelected ? 1 : 0
             }
         }

@@ -21,6 +21,7 @@ final class ChatListViewController: UICollectionViewController {
     private let progressLabel = UILabel()
     private let errorLabel = UILabel()
     private let searchContainer = UIVisualEffectView(effect: UIBlurEffect(style: .dark))
+    private let searchBackgroundView = UIView()
     private let searchField = UITextField()
     private let selectionStatusLabel = UILabel()
     private let searchBackgroundNormal = UIColor(white: 0.12, alpha: 0.9)
@@ -101,10 +102,34 @@ final class ChatListViewController: UICollectionViewController {
         ])
     }
 
+    private func currentFocusedView() -> UIView? {
+        if let scene = view.window?.windowScene {
+            return scene.focusSystem?.focusedItem as? UIView
+        }
+        return UIFocusSystem.focusSystem(for: view)?.focusedItem as? UIView
+    }
+
+    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        let isMenuPress = presses.contains(where: { $0.type == .menu || $0.key?.keyCode == .keyboardEscape })
+        if isMenuPress {
+            // Закрываем клавиатуру/редактирование до смены фокуса
+            if searchField.isFirstResponder {
+                closeKeyboard()
+            }
+            if let topMenu, let focused = currentFocusedView(), !focused.isDescendant(of: topMenu) {
+                pendingMenuFocus = true
+                setNeedsFocusUpdate()
+                updateFocusIfNeeded()
+                return
+            }
+        }
+        super.pressesBegan(presses, with: event)
+    }
+
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         navigationController?.setNavigationBarHidden(true, animated: false)
-        topMenu?.setCurrentIndex(1) // Синхронизируем вкладку
+        topMenu?.setCurrentIndex(2) // Синхронизируем вкладку
     }
 
     override func viewWillDisappear(_ animated: Bool) {
@@ -157,7 +182,14 @@ final class ChatListViewController: UICollectionViewController {
     }
 
     private func setupTopMenuBar() {
-        let menu = TopMenuView(items: ["Главная", "Каналы", "Настройки"], selectedIndex: 1)
+        let items = [
+            NSLocalizedString("tab.search", comment: ""),
+            NSLocalizedString("tab.home", comment: ""),
+            NSLocalizedString("tab.channels", comment: ""),
+            NSLocalizedString("tab.help", comment: ""),
+            NSLocalizedString("tab.settings", comment: "")
+        ]
+        let menu = TopMenuView(items: items, selectedIndex: 2)
         menu.translatesAutoresizingMaskIntoConstraints = false
         menu.onTabSelected = { [weak self] index in
             self?.handleTabSelection(index)
@@ -177,8 +209,12 @@ final class ChatListViewController: UICollectionViewController {
         let appDelegate = UIApplication.shared.delegate as? AppDelegate
         switch index {
         case 0:
+            appDelegate?.showSearch()
+        case 1:
             appDelegate?.showHome()
-        case 2:
+        case 3:
+            appDelegate?.showHelp()
+        case 4:
             appDelegate?.showSettings()
         default:
             break
@@ -187,11 +223,17 @@ final class ChatListViewController: UICollectionViewController {
     
     private func setupSearchBar() {
         searchContainer.translatesAutoresizingMaskIntoConstraints = false
-        searchContainer.layer.cornerRadius = 18
+        // Делаем «капсулу» как в tvOS UI
+        searchContainer.layer.cornerRadius = 35
         searchContainer.clipsToBounds = true
-        searchContainer.backgroundColor = searchBackgroundNormal
+        // UIVisualEffectView плохо работает с прямой установкой backgroundColor — используем отдельный слой.
+        searchContainer.backgroundColor = .clear
         searchContainer.contentView.backgroundColor = .clear
         headerContainer.addSubview(searchContainer)
+
+        searchBackgroundView.translatesAutoresizingMaskIntoConstraints = false
+        searchBackgroundView.backgroundColor = searchBackgroundNormal
+        searchContainer.contentView.addSubview(searchBackgroundView)
         
         let searchIcon = UIImageView(image: UIImage(systemName: "magnifyingglass"))
         searchIcon.tintColor = UIColor(white: 0.6, alpha: 1)
@@ -200,7 +242,8 @@ final class ChatListViewController: UICollectionViewController {
         
         searchField.translatesAutoresizingMaskIntoConstraints = false
         searchField.delegate = self
-        searchField.placeholder = "Поиск чатов"
+        let searchPlaceholder = NSLocalizedString("search.chats.placeholder", comment: "")
+        searchField.placeholder = searchPlaceholder
         searchField.textColor = .white
         searchField.font = .systemFont(ofSize: 32, weight: .regular)
         searchField.autocapitalizationType = .none
@@ -211,7 +254,7 @@ final class ChatListViewController: UICollectionViewController {
         searchField.addTarget(self, action: #selector(searchTextDidChange(_:)), for: .editingChanged)
         searchField.tintColor = .systemBlue
         searchField.attributedPlaceholder = NSAttributedString(
-            string: "Поиск чатов",
+            string: searchPlaceholder,
             attributes: [.foregroundColor: UIColor(white: 0.6, alpha: 1)]
         )
         
@@ -219,6 +262,11 @@ final class ChatListViewController: UICollectionViewController {
         searchContainer.contentView.addSubview(searchField)
         
         NSLayoutConstraint.activate([
+            searchBackgroundView.topAnchor.constraint(equalTo: searchContainer.contentView.topAnchor),
+            searchBackgroundView.bottomAnchor.constraint(equalTo: searchContainer.contentView.bottomAnchor),
+            searchBackgroundView.leadingAnchor.constraint(equalTo: searchContainer.contentView.leadingAnchor),
+            searchBackgroundView.trailingAnchor.constraint(equalTo: searchContainer.contentView.trailingAnchor),
+
             searchContainer.topAnchor.constraint(equalTo: topMenu?.bottomAnchor ?? headerContainer.topAnchor, constant: 20),
             searchContainer.leadingAnchor.constraint(equalTo: headerContainer.leadingAnchor, constant: 80),
             searchContainer.trailingAnchor.constraint(equalTo: headerContainer.trailingAnchor, constant: -80),
@@ -246,7 +294,7 @@ final class ChatListViewController: UICollectionViewController {
         selectionStatusLabel.textColor = .white
         selectionStatusLabel.font = .systemFont(ofSize: 24, weight: .medium)
         selectionStatusLabel.textAlignment = .left
-        selectionStatusLabel.text = "Не выбрано"
+        selectionStatusLabel.text = NSLocalizedString("selection.none", comment: "")
         headerContainer.addSubview(selectionStatusLabel)
 
         NSLayoutConstraint.activate([
@@ -365,7 +413,10 @@ final class ChatListViewController: UICollectionViewController {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] error in
                 guard let self, let error else { return }
-                self.errorLabel.text = "Ошибка: \(error.localizedDescription)"
+                self.errorLabel.text = String(
+                    format: NSLocalizedString("channels.errorPrefix", comment: ""),
+                    error.localizedDescription
+                )
                 self.errorLabel.isHidden = false
                 self.loadingIndicator.stopAnimating()
                 self.progressLabel.isHidden = true
@@ -402,13 +453,13 @@ final class ChatListViewController: UICollectionViewController {
         }
         
         if !viewModel.searchQuery.isEmpty {
-            errorLabel.text = "Ничего не найдено"
+            errorLabel.text = NSLocalizedString("channels.nothingFound", comment: "")
             errorLabel.textColor = UIColor(white: 0.5, alpha: 1)
             errorLabel.isHidden = false
             loadingIndicator.stopAnimating()
             progressLabel.isHidden = true
         } else if !viewModel.isLoading && viewModel.chats.isEmpty {
-            errorLabel.text = "Нет доступных чатов"
+            errorLabel.text = NSLocalizedString("channels.noChats", comment: "")
             errorLabel.textColor = UIColor(red: 1, green: 0.4, blue: 0.4, alpha: 1)
             errorLabel.isHidden = false
         } else {
@@ -465,7 +516,14 @@ final class ChatListViewController: UICollectionViewController {
     private func updateSelectionUI() {
         guard onSaveSelection != nil else { return }
         let count = selectedChatIds.count
-        selectionStatusLabel.text = count == 0 ? "Не выбрано" : "Выбрано: \(count)"
+        if count == 0 {
+            selectionStatusLabel.text = NSLocalizedString("selection.none", comment: "")
+        } else {
+            selectionStatusLabel.text = String(
+                format: NSLocalizedString("selection.count", comment: ""),
+                count
+            )
+        }
     }
 
     override func shouldUpdateFocus(in context: UIFocusUpdateContext) -> Bool {
@@ -518,7 +576,7 @@ final class ChatListViewController: UICollectionViewController {
 
     private func updateSearchFocus(isFocused: Bool) {
         UIView.animate(withDuration: 0.15) {
-            self.searchContainer.backgroundColor = isFocused ? self.searchBackgroundFocused : self.searchBackgroundNormal
+            self.searchBackgroundView.backgroundColor = isFocused ? self.searchBackgroundFocused : self.searchBackgroundNormal
             self.searchContainer.layer.borderWidth = isFocused ? 2 : 0
             self.searchContainer.layer.borderColor = isFocused ? UIColor.systemBlue.cgColor : UIColor.clear.cgColor
         }
@@ -574,6 +632,10 @@ final class ChatListViewController: UICollectionViewController {
     }
 
     override var preferredFocusEnvironments: [UIFocusEnvironment] {
+        if pendingMenuFocus, let menu = topMenu, let target = menu.currentFocusTarget() {
+            pendingMenuFocus = false
+            return [target]
+        }
         if let menu = topMenu, let target = menu.currentFocusTarget() {
             return [target]
         }
