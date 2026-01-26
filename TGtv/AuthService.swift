@@ -130,7 +130,7 @@ class AuthService {
             try await client.setTdlibParameters(
                 apiHash: Config.apiHash,
                 apiId: Config.apiId,
-                applicationVersion: "1.0.1",
+                applicationVersion: "1.0.2",
                 databaseDirectory: databasePath,
                 // TDLib ожидает либо пустой ключ (без шифрования), либо 32 байта.
                 // Используем 32 байта нулей для предсказуемого поведения между запусками.
